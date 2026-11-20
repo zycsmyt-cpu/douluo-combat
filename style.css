@@ -104,6 +104,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    min-width: 0;
 }
 
 #dlc-panel .dlc-col-head {
@@ -116,11 +117,13 @@
 }
 
 #dlc-panel .dlc-units {
+    flex: 1 1 auto;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
     gap: 8px;
     padding-right: 2px;
+    min-height: 0;
 }
 
 #dlc-panel .dlc-unit {
@@ -249,6 +252,7 @@
 #dlc-panel .dlc-roster-bottom {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
     min-width: 0;
 }
@@ -316,10 +320,10 @@
 }
 
 #dlc-panel .dlc-log {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     height: auto;
-    min-height: 64px;
-    max-height: 210px;
+    min-height: 56px;
+    max-height: 150px;
     margin: 6px 12px 0;
     padding: 8px 10px;
     overflow-y: auto;
@@ -671,12 +675,12 @@
 /* 演武场下方：我方 / 敌方 两栏 */
 #dlc-panel .dlc-sides {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     gap: 10px;
     padding: 0 12px 6px;
-    flex: 0 0 auto;
-    min-height: 0;
-    max-height: 180px;
+    flex: 1 1 auto;
+    min-height: 110px;
+    max-height: 34vh;
     overflow: hidden;
 }
 
@@ -966,4 +970,27 @@
 
 #dlc-fab:active {
     transform: scale(0.96);
+}
+
+/* ===== 右下角拖拽缩放 ===== */
+#dlc-panel .dlc-resize {
+    position: absolute;
+    right: 1px;
+    bottom: 1px;
+    width: 16px;
+    height: 16px;
+    cursor: nwse-resize;
+    z-index: 20;
+    background:
+        linear-gradient(135deg, transparent 42%, rgba(120, 170, 255, 0.45) 42%, rgba(120, 170, 255, 0.45) 52%, transparent 52%),
+        linear-gradient(135deg, transparent 62%, rgba(120, 170, 255, 0.3) 62%, rgba(120, 170, 255, 0.3) 72%, transparent 72%);
+    border-bottom-right-radius: 14px;
+}
+
+#dlc-panel.resizing {
+    user-select: none;
+}
+
+#dlc-panel.resizing .dlc-resize {
+    background: rgba(120, 170, 255, 0.35);
 }

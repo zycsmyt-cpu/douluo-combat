@@ -51,6 +51,7 @@ const DEFAULT_SETTINGS = {
     customSkills: null,  // 玩家自己写的魂技
     elementConfig: null, // 自定义属性表 / 克制表
     panelPos: null,      // 浮窗拖过之后记住位置
+    panelSize: null,     // 浮窗拖边框缩放过之后记住大小
     fabPos: null,        // 悬浮球拖过之后记住位置
     ai: null,            // AI 接入配置（OpenAI 兼容）
 };
@@ -768,7 +769,8 @@ function renderPanel() {
       <button class="dlc-btn" data-act="probe">探变量</button>
       <button class="dlc-btn" data-act="reset">重置队伍</button>
       <button class="dlc-btn" data-act="diag">自检</button>
-    </div>`;
+    </div>
+    <div class="dlc-resize" data-resize title="拖动缩放"></div>`;
 
     const logEl = S.root.querySelector('#dlc-log');
     if (logEl) logEl.scrollTop = logEl.scrollHeight;
@@ -1964,9 +1966,17 @@ function onAction(act, el) {
 }
 
 function bindRoot(root) {
-    // 拖动标题栏移动浮窗
+    // 拖动标题栏移动浮窗 / 拖右下角缩放
     let drag = null;
+    let resize = null;
     root.addEventListener('mousedown', (e) => {
+        if (e.target.closest('[data-resize]')) {
+            const r = root.getBoundingClientRect();
+            resize = { w: r.width, h: r.height, sx: e.clientX, sy: e.clientY };
+            root.classList.add('resizing');
+            e.preventDefault();
+            return;
+        }
         if (!e.target.closest('[data-drag]')) return;
         if (e.target.closest('button, input, label, select')) return;
         const r = root.getBoundingClientRect();
@@ -1975,6 +1985,14 @@ function bindRoot(root) {
         e.preventDefault();
     });
     const onMove = (e) => {
+        if (resize) {
+            const w = Math.max(520, Math.min(window.innerWidth - 20, resize.w + (e.clientX - resize.sx)));
+            const h = Math.max(360, Math.min(window.innerHeight - 40, resize.h + (e.clientY - resize.sy)));
+            root.style.width = `${Math.round(w)}px`;
+            root.style.height = `${Math.round(h)}px`;
+            root.style.maxHeight = 'none';
+            return;
+        }
         if (!drag) return;
         const w = root.offsetWidth;
         const h = root.offsetHeight;
@@ -1985,6 +2003,15 @@ function bindRoot(root) {
         root.style.right = 'auto';
     };
     const onUp = () => {
+        if (resize) {
+            resize = null;
+            root.classList.remove('resizing');
+            if (S.settings) {
+                S.settings.panelSize = { width: root.style.width, height: root.style.height };
+                saveSettings();
+            }
+            return;
+        }
         if (!drag) return;
         drag = null;
         root.classList.remove('dragging');
@@ -2134,12 +2161,18 @@ function buildPanel() {
     root.id = 'dlc-panel';
     document.body.appendChild(root);
     S.root = root;
-    // 恢复上次拖动留下的位置
+    // 恢复上次拖动留下的位置和缩放过的大小
     const savedPos = S.settings && S.settings.panelPos;
     if (savedPos && savedPos.left) {
         root.style.left = savedPos.left;
         root.style.top = savedPos.top;
         root.style.right = 'auto';
+    }
+    const savedSize = S.settings && S.settings.panelSize;
+    if (savedSize && savedSize.width) {
+        root.style.width = savedSize.width;
+        root.style.height = savedSize.height;
+        root.style.maxHeight = 'none';
     }
     bindRoot(root);
     try {
