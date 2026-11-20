@@ -1057,15 +1057,29 @@ export class Battle {
                 actor.mp = Math.min(aMax, (actor.mp || 0) + grab);
                 push({ t: 'drain', target: target.uid, value: grab, text: `${actor.name} 吸取 ${target.name} 魂力 ${grab} 点（${pct}% 上限）。` });
             } else if (eff.type === 'steal') {
-                // 偷属性：目标降、自己升同样的量
+                // 偷属性：目标降、自己升同样的量。stat 写 all 就是全五维一起偷
                 const v = Math.abs(Number(eff.value) || 15);
                 const turns = eff.turns || 2;
                 const mode = eff.mode || 'pct';
+                const isAll = !eff.stat || eff.stat === 'all';
+                // 派生属性在 buffs 之前就算完了，所以全属性要把五维和派生一起挂
+                const stats = isAll
+                    ? ['str', 'vit', 'agi', 'spi', 'sou', 'atk', 'def', 'spd', 'satk', 'sdef']
+                    : [eff.stat];
                 target.buffs = target.buffs || [];
-                target.buffs.push({ stat: eff.stat, value: -v, mode, turns, label });
                 actor.buffs = actor.buffs || [];
-                actor.buffs.push({ stat: eff.stat, value: v, mode, turns, label: `${label}·夺取` });
-                push({ t: 'buff', target: target.uid, text: `${actor.name} 夺取 ${target.name} 的 ${eff.stat} ${v}${mode === 'pct' ? '%' : ''}（${turns} 回合）。` });
+                for (const st of stats) {
+                    target.buffs.push({ stat: st, value: -v, mode, turns, label });
+                    actor.buffs.push({ stat: st, value: v, mode, turns, label: `${label}·夺取` });
+                }
+                const unit = mode === 'pct' ? '%' : '';
+                push({
+                    t: 'buff',
+                    target: target.uid,
+                    text: isAll
+                        ? `${actor.name} 夺取 ${target.name} 的全属性各 ${v}${unit}（五维，${turns} 回合）。`
+                        : `${actor.name} 夺取 ${target.name} 的 ${eff.stat} ${v}${unit}（${turns} 回合）。`,
+                });
             } else if (eff.type === 'silence') {
                 // 封印敌方魂技：期间只能普攻
                 const turns = eff.turns || 2;

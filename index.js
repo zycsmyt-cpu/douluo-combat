@@ -959,6 +959,7 @@ const AI_UNIT_PROMPT = `你是《斗罗大陆》的魂师数据顾问。根据�
   effects 是可选的特殊效果数组，按下面写：
   · {"type":"drainMp","value":20} 吸取魂力（抽目标最大魂力 20% 给自己）
   · {"type":"steal","stat":"atk","value":15,"turns":2} 偷属性（目标 -15%，自己 +15%，2 回合）
+    stat 写 "all" 表示全五维一起偷（str vit agi spi sou），派生属性会跟着变
   · {"type":"silence","turns":2} 封印魂技（目标 2 回合内只能普攻）
   · {"type":"stun","turns":1} 眩晕
   · {"type":"burn","value":5,"turns":2} 灼烧 / "bleed" 流血
@@ -1567,7 +1568,7 @@ function parseEffects(text) {
         if (!EFFECT_TYPES.includes(type)) continue;
         const eff = { type, value: 0, turns: 2, chance: 100, mode: 'pct', label: type };
         if (type === 'steal' || type === 'debuff' || type === 'buff') {
-            eff.stat = parts[1] || 'atk';
+            eff.stat = parts[1] || (type === 'steal' ? 'all' : 'atk');
             eff.value = Number(parts[2]);
             if (!Number.isFinite(eff.value)) eff.value = type === 'steal' ? 15 : -15;
             eff.turns = Number(parts[3]) || 2;
@@ -1662,9 +1663,9 @@ function openItemEditor(ctx, kind, idx) {
             </label>
           </div>
           <div class="dlc-note">
-            每行一条：<code>drainMp:30</code> 吸魂力 30%｜<code>steal:atk:20:3</code> 偷攻击 20%、3 回合｜
-            <code>silence:2</code> 封印魂技 2 回合｜<code>stun:1</code> 眩晕｜<code>burn:5:2</code> 灼烧 5%、2 回合｜
-            <code>shield:20:2</code> 护盾｜<code>debuff:spd:-20:2</code> 减益
+            每行一条：<code>drainMp:30</code> 吸魂力 30%｜<code>steal:all:15:3</code> 偷全属性 15%、3 回合｜
+            <code>steal:atk:20:3</code> 只偷攻击｜<code>silence:2</code> 封印魂技 2 回合｜<code>stun:1</code> 眩晕｜
+            <code>burn:5:2</code> 灼烧 5%、2 回合｜<code>shield:20:2</code> 护盾｜<code>debuff:spd:-20:2</code> 减益
           </div>`;
     } else if (kind === 'bone') {
         const s = Object.assign({ name: '', slot: 'torso', year: 1000, mods: {} }, src);

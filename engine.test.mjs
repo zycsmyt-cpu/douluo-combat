@@ -481,4 +481,23 @@ ok('封印魂技：期间只能用普攻', () => {
     assert.ok(t.silenced < 3, '回合推进应该递减');
 });
 
+ok('吸全属性：五维一起偷，派生跟着变', () => {
+    const b = battleWithSkill({
+        id: 'steal-all', name: '夺元', element: 'dark', kind: 'debuff',
+        cost: 0, cd: 0, power: 0.1, poise: 0, range: 4, aoe: 0, target: 'enemy',
+        effects: [{ type: 'steal', stat: 'all', value: 20, turns: 2, label: '夺元' }],
+    });
+    b.start();
+    const a = b.units[0];
+    const t = b.units[1];
+    const atk0 = computeStats(a).atk;
+    b.act('steal-all', t.uid);
+    for (const k of ['str', 'vit', 'agi', 'spi', 'sou']) {
+        assert.ok((t.buffs || []).some((x) => x.stat === k && x.value < 0), `目标 ${k} 应有负 buff`);
+        assert.ok((a.buffs || []).some((x) => x.stat === k && x.value > 0), `自己 ${k} 应有正 buff`);
+    }
+    // 五维涨了，攻击力这种派生值要跟着涨
+    assert.ok(computeStats(a).atk > atk0, `夺取后攻击应上升，原 ${atk0} 现 ${computeStats(a).atk}`);
+});
+
 console.log(`\n通过 ${passed} 项。\n`);
