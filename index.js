@@ -66,7 +66,7 @@ const DEFAULT_AI = {
     apiKey: '',
     model: 'deepseek-chat',
     temperature: 0.3,
-    maxTokens: 3000,
+    maxTokens: 8000,
     chatCount: 20,
     sources: { chat: true, character: false, worldbook: false, mvu: false },
     mode: 'off',   // off / enemy / auto / narrator
@@ -782,6 +782,9 @@ function render() {
 
 /* ---------------- AI 接入（OpenAI 兼容） ---------------- */
 
+// 上一次调用有没有因为 max_tokens 被截断
+let lastAITruncated = false;
+
 function aiCfg() {
     const base = S.settings.ai || {};
     return Object.assign({}, DEFAULT_AI, base, {
@@ -825,26 +828,73 @@ async function callAI(messages, opts = {}) {
         throw new Error(`HTTP ${res.status}：${detail || res.statusText}`);
     }
     const data = await res.json();
-    const content = data && data.choices && data.choices[0] && data.choices[0].message
-        ? data.choices[0].message.content
-        : '';
+    const choice = data && data.choices && data.choices[0] ? data.choices[0] : null;
+    lastAITruncated = !!(choice && choice.finish_reason === 'length');
+    const content = choice && choice.message ? choice.message.content : '';
     if (!content) throw new Error('模型没返回内容');
     return String(content);
 }
 
-// 从回复里抠 JSON：模型爱包 ```json 代码块
+// 从回复里抠 JSON：模型爱包 ```json 代码块，偶尔还会被 max_tokens 截断
 function extractJson(text) {
     if (!text) return null;
     const fence = String(text).match(/```(?:json)?\s*([\s\S]*?)```/i);
     const raw = fence ? fence[1] : String(text);
     const start = raw.indexOf('{');
-    const end = raw.lastIndexOf('}');
-    if (start < 0 || end <= start) return null;
-    try {
-        return JSON.parse(raw.slice(start, end + 1));
-    } catch (e) {
-        return null;
+    if (start < 0) return null;
+    const core = raw.slice(start);
+    const end = core.lastIndexOf('}');
+    if (end > 0) {
+        try {
+            return JSON.parse(core.slice(0, end + 1));
+        } catch (_) { /* 走修复分支 */ }
     }
+    return repairTruncatedJson(core);
+}
+
+// 输出被截断时，尽量把已经完整的单位救回来
+function repairTruncatedJson(s) {
+    const tails = [']}]}', '}]}', ']}}', ']}', ']}', '}}', ']'];
+    const lastBrace = s.lastIndexOf('}');
+    if (lastBrace > 0) {
+        const head = s.slice(0, lastBrace + 1).replace(/[,\s]+$/, '');
+        for (const tail of tails) {
+            try {
+                const obj = JSON.parse(head + tail);
+                if (obj && Array.isArray(obj.units) && obj.units.length) return obj;
+            } catch (_) { /* 换一种收尾 */ }
+        }
+    }
+    // 倒着剪掉末尾不完整的部分，逐次自动补括号
+    const floor = Math.max(10, s.length - 400);
+    for (let cut = s.length; cut > floor; cut--) {
+        const head = s.slice(0, cut).replace(/[,\s]+$/, '');
+        const closed = autoCloseBrackets(head);
+        if (!closed) continue;
+        try {
+            const obj = JSON.parse(closed);
+            if (obj && Array.isArray(obj.units) && obj.units.length) return obj;
+        } catch (_) { /* 继续剪 */ }
+    }
+    return null;
+}
+
+// 统计还有几层括号没闭合，补上
+function autoCloseBrackets(s) {
+    let inStr = false;
+    let esc = false;
+    const stack = [];
+    for (const ch of s) {
+        if (esc) { esc = false; continue; }
+        if (ch === '\\') { esc = true; continue; }
+        if (ch === '"') { inStr = !inStr; continue; }
+        if (inStr) continue;
+        if (ch === '{') stack.push('}');
+        else if (ch === '[') stack.push(']');
+        else if (ch === '}' || ch === ']') stack.pop();
+    }
+    if (inStr) return null;
+    return s + stack.reverse().join('');
 }
 
 // 按勾选拼上下文喂给模型
@@ -859,7 +909,7 @@ async function collectAIContext() {
         const msgs = c.chat.slice(-n);
         const text = msgs.map((m) => {
             const who = m.is_user ? '用户' : (m.name || '角色');
-            return `${who}：${String(m.mes || '').slice(0, 1200)}`;
+            return `${who}：${String(m.mes || '').slice(0, 2200)}`;
         }).join('\n');
         parts.push(`【最近 ${msgs.length} 条聊天】\n${text}`);
     }
@@ -904,6 +954,7 @@ const AI_UNIT_PROMPT = `你是《斗罗大陆》的魂师数据顾问。根据�
 - element: metal | wood | water | fire | earth | wind | thunder | light | dark | holy | life | poison | spirit | time | space | destroy
 - skills: 魂技数组，每个 {name, kind, element, desc}
   kind: phys(物理) | spirit(精神) | control(控制) | heal(治疗) | buff(增益) | debuff(减益) | shield(护盾)
+  desc 控制在 20 字内，别写小作文，省 token
 - techniques: 功法数组，每个 {name, mods, desc}
 - equipment: 装备数组，每个 {name, slot, quality, mods, desc}
   slot: weapon | armor | accessory
@@ -919,6 +970,9 @@ mods 只能用下面这些 key，不要自己编：
 - 固定值：名字后加 Flat，如 penetrationFlat moveFlat atkSpdFlat
 
 硬性要求：
+- **魂技必须一个不漏**：材料里出现几个就写几个，按出现顺序列，不要合并、不要省略、不要写「等」「其他」这类占位
+- **双生武魂有两套魂技，两套都要列**；一个单位十几个魂技是正常的，不要因为嫌长就少给
+- 技能数量以材料为准，材料没写才留空数组
 - **魂技只给名字/类型/属性/说明，不要给倍率、耗魂力、冷却、射程这些数值**，系统按类型套模板
 - **不要给力量/体质/敏捷/精神/魂力这类五维数值**，系统按成长表算
 - 功法/装备/魂骨的 mods 可以给，但要克制，单项不超过 30
@@ -1033,7 +1087,7 @@ async function aiParseUnits() {
     try {
         const content = await callAI([
             { role: 'system', content: AI_UNIT_PROMPT },
-            { role: 'user', content: material.slice(0, 24000) },
+            { role: 'user', content: material.slice(0, 40000) },
         ]);
         const data = extractJson(content);
         if (!data || !Array.isArray(data.units) || !data.units.length) {
@@ -1041,6 +1095,11 @@ async function aiParseUnits() {
             logOnly(String(content).slice(0, 600));
             render();
             return;
+        }
+        const skillTotal = data.units.reduce((n, u) => n + (Array.isArray(u.skills) ? u.skills.length : 0), 0);
+        if (lastAITruncated) {
+            logOnly(`[AI] 警告：输出被 max_tokens 截断了（拿到 ${data.units.length} 人 / ${skillTotal} 个魂技）。`);
+            logOnly('[AI] 建议：调小「聊天条数」减少材料，或把设置里的 maxTokens 调大。');
         }
         applyAIUnits(data.units);
     } catch (e) {
