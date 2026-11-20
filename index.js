@@ -26,7 +26,7 @@ import {
     registerSkills,
 } from './data.js';
 import {
-    Battle, BASIC_ATTACK, statBlock, renderBattleReport, mulberry32, computeStats, CONFIG,
+    Battle, BASIC_ATTACK, statBlock, renderBattleReport, mulberry32, computeStats, CONFIG, clamp,
     resolveSkill, resolveBone, resolveTech, resolveEquip, idOf,
 } from './engine.js';
 import { parseUnit, gatherSources, gatherMvu, describeMvu, DEFAULT_SOURCES, summarize } from './parser.js';
@@ -512,13 +512,46 @@ function rosterCard(cfg, side, index) {
     const ids = new Set([...(cfg.skills || []), ...(cfg.rings || []).flatMap((r) => r.skills || [])]);
     const q = QUALITY[cfg.quality]?.name || '';
     const role = ROLES[cfg.role]?.name || '';
+    const p = cfg.pos || defaultPos(side, index);
     return `
     <div class="dlc-roster-item">
-      <span class="dlc-roster-name">${esc(cfg.name)}</span>
-      <em>Lv.${cfg.lv || 1}${q ? ` · ${esc(q)}` : ''}${role ? ` · ${esc(role)}` : ''} · ${esc(rings)} · ${ids.size} 技</em>
-      <button class="dlc-mini" data-edit="${side}:${index}">编辑</button>
-      <button class="dlc-mini" data-act="del" data-side="${side}" data-index="${index}">删</button>
+      <div class="dlc-roster-top">
+        <span class="dlc-roster-name">${esc(cfg.name)}</span>
+        <em>Lv.${cfg.lv || 1}${q ? ` · ${esc(q)}` : ''}${role ? ` · ${esc(role)}` : ''} · ${esc(rings)} · ${ids.size} 技</em>
+      </div>
+      <div class="dlc-roster-bottom">
+        <span class="dlc-posedit" title="站位 ${p.x},${p.y}">
+          <button class="dlc-nudge" data-nudge="${side}:${index}:left" title="左移一格">←</button>
+          <button class="dlc-nudge" data-nudge="${side}:${index}:up" title="上移一格">↑</button>
+          <button class="dlc-nudge" data-nudge="${side}:${index}:down" title="下移一格">↓</button>
+          <button class="dlc-nudge" data-nudge="${side}:${index}:right" title="右移一格">→</button>
+          <span class="dlc-poslabel">${p.x},${p.y}</span>
+        </span>
+        <span class="dlc-roster-actions">
+          <button class="dlc-mini" data-edit="${side}:${index}">编辑</button>
+          <button class="dlc-mini" data-act="del" data-side="${side}" data-index="${index}">删</button>
+        </span>
+      </div>
     </div>`;
+}
+
+// 战斗前微调站位：方向键一次一格，切比雪夫网格，越界就夹住
+function nudgeUnit(side, index, dir) {
+    if (S.battle && !S.battle.finished) {
+        toast('战斗中不能改站位，先「重置队伍」或打完这场');
+        return;
+    }
+    const u = S.units[side] && S.units[side][index];
+    if (!u) return;
+    const p = u.pos || defaultPos(side, index);
+    const d = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[dir];
+    if (!d) return;
+    u.pos = {
+        x: clamp((Number(p.x) || 0) + d[0], 0, BATTLEFIELD.width - 1),
+        y: clamp((Number(p.y) || 0) + d[1], 0, BATTLEFIELD.height - 1),
+    };
+    saveSettings();
+    render();
 }
 
 /* ---------------- 渲染：行动条 ---------------- */
@@ -695,6 +728,13 @@ function importFromPaste(side) {
         <div class="dlc-form">
           <div class="dlc-note">把角色卡里和战斗有关的部分贴进来：武魂、魂力等级、魂环、魂技、魂骨、功法、五维。</div>
           <textarea class="dlc-textarea" rows="12" placeholder="姓名：唐昊&#10;魂力等级：92级&#10;武魂：昊天锤（极品）&#10;类型：强攻系&#10;属性：金&#10;力量：98 体质：90 敏捷：75 精神：60 魂力：95&#10;第一魂环：百年 第二魂环：千年&#10;第一魂技：昊天护体（护盾）&#10;魂骨：万年右臂魂骨&#10;功法：冲天诀 铁骨功"></textarea>
+          <div class="dlc-row">
+            <label>加到 <select data-paste-side>
+              <option value="ally" ${side !== 'enemy' ? 'selected' : ''}>我方</option>
+              <option value="enemy" ${side === 'enemy' ? 'selected' : ''}>敌方</option>
+            </select></label>
+            <span class="dlc-note">解析完会打开编辑器，阵营还能在那里改</span>
+          </div>
         </div>
         <div class="dlc-modal-foot">
           <button class="dlc-btn" data-act="modal-cancel">取消</button>
@@ -715,9 +755,10 @@ function importFromPaste(side) {
             const text = ta ? ta.value : '';
             if (!text.trim()) { toast('文本是空的'); return; }
             S.importText = text;
+            const targetSide = el.querySelector('[data-paste-side]')?.value || side || 'ally';
             closeEditor();
             const unit = parseUnit(text, {});
-            applyParsed(side, unit);
+            applyParsed(targetSide, unit);
         }
     });
 
@@ -840,6 +881,10 @@ function openEditor(side, index, draft) {
             <label>武魂 <input data-f="martial" value="${esc(c.martial || '')}" placeholder="蓝银草"></label>
           </div>
           <div class="dlc-row">
+            <label>阵营 <select data-side-target>
+              <option value="ally" ${side !== 'enemy' ? 'selected' : ''}>我方</option>
+              <option value="enemy" ${side === 'enemy' ? 'selected' : ''}>敌方</option>
+            </select></label>
             <label>品质 <select data-f="quality">${qOpts}</select></label>
             <label>类型 <select data-f="role">${rOpts}</select></label>
             <label>属性 <select data-f="element">${elementOptions(c.element)}</select></label>
@@ -1432,8 +1477,18 @@ function saveEditor(el, c) {
     if (!S.editing) return;
     const out = readEditorForm(el, c);
     const { side, index } = S.editing;
-    if (index < 0) S.units[side].push(out);
-    else S.units[side][index] = out;
+    // 编辑器里可以改阵营：保存时把单位挪到目标那一栏
+    const targetSide = el.querySelector('[data-side-target]')?.value || side;
+
+    if (index < 0) {
+        S.units[targetSide].push(out);
+    } else if (targetSide === side) {
+        S.units[side][index] = out;
+    } else {
+        S.units[side].splice(index, 1);
+        S.units[targetSide].push(out);
+        logOnly(`[编辑] ${out.name} 从${side === 'ally' ? '我方' : '敌方'}调到${targetSide === 'ally' ? '我方' : '敌方'}`);
+    }
 
     saveSettings();
     closeEditor();
@@ -1485,12 +1540,13 @@ function onAction(act, el) {
             probeMvu();
             return;
         case 'import': {
-            const side = el.getAttribute('data-side') || 'enemy';
+            // 默认加到「我方」：粘贴的多半是自己要用的角色，错了在编辑器里还能换阵营
+            const side = el.getAttribute('data-side') || 'ally';
             importFromCard(side);
             return;
         }
         case 'paste': {
-            const side = el.getAttribute('data-side') || 'enemy';
+            const side = el.getAttribute('data-side') || 'ally';
             importFromPaste(side);
             return;
         }
@@ -1520,6 +1576,12 @@ function bindRoot(root) {
         S.root.classList.remove('open');
     });
     root.addEventListener('click', (e) => {
+        const nudgeEl = e.target.closest('[data-nudge]');
+        if (nudgeEl) {
+            const [side, idx, dir] = nudgeEl.getAttribute('data-nudge').split(':');
+            nudgeUnit(side, Number(idx), dir);
+            return;
+        }
         const editEl = e.target.closest('[data-edit]');
         if (editEl) {
             const [side, idx] = editEl.getAttribute('data-edit').split(':');

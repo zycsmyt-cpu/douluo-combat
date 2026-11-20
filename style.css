@@ -223,19 +223,77 @@
 
 #dlc-panel .dlc-roster-item {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
     padding: 7px 9px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.03);
 }
 
-#dlc-panel .dlc-roster-item span {
-    flex: 1;
+#dlc-panel .dlc-roster-top,
+#dlc-panel .dlc-roster-bottom {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+#dlc-panel .dlc-roster-name {
+    flex: 0 1 auto;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+#dlc-panel .dlc-roster-top em {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* 战斗前微调站位 */
+#dlc-panel .dlc-posedit {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+#dlc-panel .dlc-nudge {
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    line-height: 1;
+    font-size: 11px;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.05);
+    color: inherit;
+    cursor: pointer;
+}
+
+#dlc-panel .dlc-nudge:hover {
+    background: rgba(255, 255, 255, 0.16);
+}
+
+#dlc-panel .dlc-poslabel {
+    min-width: 32px;
+    text-align: center;
+    font-size: 11px;
+    opacity: 0.55;
+    font-variant-numeric: tabular-nums;
+}
+
+#dlc-panel .dlc-roster-actions {
+    flex: 0 0 auto;
+    display: inline-flex;
+    gap: 4px;
+    margin-left: auto;
 }
 
 #dlc-panel .dlc-roster-item em {
