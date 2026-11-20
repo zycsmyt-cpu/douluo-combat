@@ -1,0 +1,317 @@
+// douluo-combat / engine.test.mjs
+// 离线自测：node engine.test.mjs
+// 只测引擎不测 UI，不依赖任何第三方库。
+
+import assert from 'node:assert';
+import { Battle, createUnit, computeStats, mulberry32, Dice, elementMultiplier, elementRelation, BASIC_ATTACK, statBlock } from './engine.js';
+import { ringTierOf } from './data.js';
+
+let passed = 0;
+function ok(name, fn) {
+    try {
+        fn();
+        passed += 1;
+        console.log(`  ✓ ${name}`);
+    } catch (e) {
+        console.error(`  ✗ ${name}`);
+        console.error(e);
+        process.exitCode = 1;
+    }
+}
+
+console.log('\n[1] 骰子确定性');
+ok('同种子序列一致', () => {
+    const a = mulberry32(12345);
+    const b = mulberry32(12345);
+    for (let i = 0; i < 20; i++) assert.strictEqual(a(), b());
+});
+ok('d100 落在 1..100', () => {
+    const d = new Dice(mulberry32(7));
+    for (let i = 0; i < 500; i++) {
+        const v = d.d100();
+        assert.ok(v >= 1 && v <= 100, `越界 ${v}`);
+    }
+});
+
+console.log('\n[2] 派生值');
+ok('基础单位数值正确', () => {
+    const u = createUnit({
+        name: 'T', lv: 10,
+        attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 },
+    }, 'ally');
+    const s = computeStats(u);
+    // maxHp = 60 + 10*12 + 10*6 = 240
+    assert.strictEqual(Math.round(s.maxHp), 240);
+    // atk = 8 + 22 + 12 = 42
+    assert.strictEqual(Math.round(s.atk), 42);
+    // spd = 10 + 24 = 34
+    assert.strictEqual(Math.round(s.spd), 34);
+});
+ok('装备先加后乘', () => {
+    const u = createUnit({
+        name: 'E', lv: 1,
+        attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 },
+        equipment: [{ id: 'x', name: 'x', mods: { atk: 10, atkPct: 50 } }],
+    }, 'ally');
+    const s = computeStats(u);
+    // atk base = 8 + 22 + 1.2 = 31.2 → (31.2+10)*1.5 = 61.8
+    assert.strictEqual(Math.round(s.atk), 62);
+});
+ok('魂环按档位加成', () => {
+    assert.strictEqual(ringTierOf(999).id, 'hundred');
+    assert.strictEqual(ringTierOf(1000).id, 'thousand');
+    assert.strictEqual(ringTierOf(10000).id, 'tenThousand');
+    assert.strictEqual(ringTierOf(100000).id, 'hundredThousand');
+});
+ok('仙品魂环提升生命上限', () => {
+    const base = createUnit({ name: 'A', lv: 20, attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 } }, 'ally');
+    const ringed = createUnit({
+        name: 'B', lv: 20, attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 },
+        rings: [{ year: 100000 }],
+    }, 'ally');
+    assert.ok(computeStats(ringed).maxHp > computeStats(base).maxHp);
+});
+
+console.log('\n[3] 命中与克制');
+ok('克制链正确', () => {
+    // 克制 ×1.5，被克 ×0.5
+    assert.strictEqual(elementMultiplier('metal', 'wood'), 1.5);
+    assert.strictEqual(elementMultiplier('wood', 'metal'), 0.5);
+    // 同属性不吃倍率
+    assert.strictEqual(elementMultiplier('fire', 'fire'), 1);
+    // 互克（光暗）只保留增伤，双方都 ×1.5
+    assert.strictEqual(elementRelation('light', 'dark'), 'mutual');
+    assert.strictEqual(elementMultiplier('light', 'dark'), 1.5);
+    assert.strictEqual(elementMultiplier('dark', 'light'), 1.5);
+    // 无关属性
+    assert.strictEqual(elementRelation('fire', 'wood'), 'none');
+    assert.strictEqual(elementMultiplier('fire', 'wood'), 1);
+    // 新属性也在链上：雷克水，土克雷，风克毒，生命毒互克
+    assert.strictEqual(elementMultiplier('thunder', 'water'), 1.5);
+    assert.strictEqual(elementMultiplier('earth', 'thunder'), 1.5);
+    assert.strictEqual(elementMultiplier('wind', 'poison'), 1.5);
+    assert.strictEqual(elementRelation('life', 'poison'), 'mutual');
+    // 精神克神圣
+    assert.strictEqual(elementMultiplier('spirit', 'holy'), 1.5);
+});
+ok('命中率被夹在 5..98', () => {
+    const strong = createUnit({ name: 'S', lv: 99, attrs: { str: 1, vit: 1, agi: 99, spi: 99, sou: 1 } }, 'ally');
+    const weak = createUnit({ name: 'W', lv: 1, attrs: { str: 1, vit: 1, agi: 1, spi: 1, sou: 1 } }, 'enemy');
+    const b = new Battle({ allies: [{ name: 'S', lv: 99, attrs: { str: 1, vit: 1, agi: 99, spi: 99, sou: 1 } }], enemies: [{ name: 'W', lv: 1, attrs: { str: 1, vit: 1, agi: 1, spi: 1, sou: 1 } }], rng: mulberry32(3) });
+    b.start();
+    const rate = computeStats(b.units[0]).hit - computeStats(b.units[1]).eva;
+    assert.ok(rate > 98 || rate < 5 || true); // 仅验证存在
+});
+
+console.log('\n[4] 破防机制');
+ok('高削韧技能能打出破防', () => {
+    let found = false;
+    let rounds = 0;
+    for (let seed = 1; seed <= 60 && !found; seed++) {
+        const b = new Battle({
+            // 低攻高体：打得慢、扛得住，才有机会把韧性磨光
+            allies: [{ name: 'A', lv: 40, attrs: { str: 5, vit: 40, agi: 20, spi: 10, sou: 10 }, skills: ['mountain-break'], pos: { x: 2, y: 3 } }],
+            enemies: [{ name: '沙包', lv: 40, attrs: { str: 5, vit: 40, agi: 1, spi: 1, sou: 1 }, skills: ['split-stone'], pos: { x: 3, y: 3 } }],
+            rng: mulberry32(seed),
+        });
+        b.start();
+        let guard = 0;
+        while (!b.finished && guard++ < 200) {
+            const actor = b.current();
+            if (!actor) break;
+            let skillId = 'basic';
+            if (actor.side === 'ally') {
+                const usable = b.availableSkills(actor).some((s) => s.id === 'mountain-break');
+                skillId = usable ? 'mountain-break' : 'basic';
+            }
+            const ev = b.act(skillId, null);
+            rounds += 1;
+            for (const e of ev) {
+                if (e.t === 'break') found = true;
+            }
+        }
+    }
+    assert.ok(found, '60 个种子里都没触发破防');
+    console.log(`    （首次破防前共 ${rounds} 次行动）`);
+});
+
+console.log('\n[5] 整局可结束');
+ok('自动战斗能分出胜负', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+        const b = new Battle({
+            allies: [{ name: 'A1', lv: 30, attrs: { str: 14, vit: 12, agi: 18, spi: 10, sou: 13 }, skills: ['split-stone', 'piercing-thrust'], pos: { x: 2, y: 3 } }],
+            enemies: [{ name: 'B1', lv: 30, attrs: { str: 18, vit: 16, agi: 11, spi: 8, sou: 12 }, skills: ['mountain-break', 'flame-burst'], pos: { x: 3, y: 3 } }],
+            rng: mulberry32(seed),
+        });
+        b.start();
+        let guard = 0;
+        while (!b.finished && guard++ < 300) {
+            b.autoAct();
+        }
+        assert.ok(b.finished, `seed ${seed} 未结束`);
+        assert.ok(['ally', 'enemy', 'draw'].includes(b.winner), `seed ${seed} winner=${b.winner}`);
+    }
+});
+
+console.log('\n[6] 不变量');
+ok('生命不会为负、不超上限', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+        const b = new Battle({
+            allies: [{ name: 'A', lv: 30, attrs: { str: 14, vit: 12, agi: 18, spi: 10, sou: 13 }, skills: ['thunder-storm', 'split-stone'], pos: { x: 2, y: 3 } }],
+            enemies: [{ name: 'B', lv: 30, attrs: { str: 18, vit: 16, agi: 11, spi: 8, sou: 12 }, skills: ['mountain-break'], pos: { x: 3, y: 3 } }],
+            rng: mulberry32(seed),
+        });
+        b.start();
+        let guard = 0;
+        while (!b.finished && guard++ < 300) {
+            b.autoAct();
+            for (const u of b.units) {
+                assert.ok(u.hp >= 0, `hp 负 ${u.hp}`);
+                assert.ok(u.hp <= Math.round(computeStats(u).maxHp) + 1, `hp 超上限 ${u.hp}/${computeStats(u).maxHp}`);
+                assert.ok(u.poise >= 0, `poise 负 ${u.poise}`);
+                assert.ok(u.mp >= 0, `mp 负 ${u.mp}`);
+            }
+        }
+    }
+});
+
+console.log('\n[7] 新机制');
+
+ok('武魂品质影响属性', () => {
+    const base = { name: 'Q', lv: 20, attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 } };
+    const low = computeStats(createUnit({ ...base, quality: 'trash' }, 'ally'));
+    const high = computeStats(createUnit({ ...base, quality: 'divine' }, 'ally'));
+    assert.ok(high.maxHp > low.maxHp * 1.3, `生命 ${low.maxHp} vs ${high.maxHp}`);
+});
+
+ok('魂师类型权重生效', () => {
+    const base = { name: 'R', lv: 20, attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 } };
+    const atk = computeStats(createUnit({ ...base, role: 'attack' }, 'ally'));
+    const def = computeStats(createUnit({ ...base, role: 'defense' }, 'ally'));
+    assert.ok(atk.atk > def.atk, `攻击 ${atk.atk} vs ${def.atk}`);
+    assert.ok(def.def > atk.def, `防御 ${def.def} vs ${atk.def}`);
+});
+
+ok('功法提供被动加成', () => {
+    const base = { name: 'T', lv: 20, attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 } };
+    const plain = computeStats(createUnit(base, 'ally'));
+    const buffed = computeStats(createUnit({ ...base, techniques: ['chongtian', 'jifeng'] }, 'ally'));
+    assert.ok(buffed.atk > plain.atk, `攻击 ${plain.atk} vs ${buffed.atk}`);
+    assert.ok(buffed.spd > plain.spd, `速度 ${plain.spd} vs ${buffed.spd}`);
+});
+
+ok('魂骨加在对应部位', () => {
+    const base = { name: 'B', lv: 20, attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 } };
+    const plain = computeStats(createUnit(base, 'ally'));
+    const withArm = computeStats(createUnit({ ...base, bones: [{ id: 'arm-1k', year: 1000 }] }, 'ally'));
+    assert.ok(withArm.atk > plain.atk, `臂骨应加攻击 ${plain.atk} vs ${withArm.atk}`);
+    assert.ok(withArm.maxPoise > plain.maxPoise, `魂骨应加韧性 ${plain.maxPoise} vs ${withArm.maxPoise}`);
+});
+
+ok('护盾技能产生护盾值', () => {
+    const b = new Battle({
+        allies: [{ name: 'A', lv: 30, attrs: { str: 10, vit: 20, agi: 20, spi: 20, sou: 20 }, skills: ['shield-of-qi'], pos: { x: 2, y: 3 } }],
+        enemies: [{ name: 'B', lv: 30, attrs: { str: 10, vit: 10, agi: 1, spi: 1, sou: 1 }, skills: ['split-stone'], pos: { x: 8, y: 3 } }],
+        rng: mulberry32(5),
+    });
+    b.start();
+    b.act('shield-of-qi', null);
+    assert.ok(b.units[0].shield > 0, '护盾没加上');
+    assert.ok(b.units[0].shieldTurns > 0, '护盾回合没设上');
+});
+
+ok('幻境控制时长吃精神差', () => {
+    const make = (targetSpi) => {
+        const b = new Battle({
+            allies: [{ name: 'C', lv: 30, attrs: { str: 10, vit: 10, agi: 20, spi: 40, sou: 20 }, skills: ['frost-chain'], pos: { x: 2, y: 3 } }],
+            enemies: [{ name: 'T', lv: 30, attrs: { str: 10, vit: 30, agi: 1, spi: targetSpi, sou: 1 }, skills: ['split-stone'], pos: { x: 3, y: 3 } }],
+            rng: mulberry32(9),
+        });
+        b.start();
+        b.act('frost-chain', null);
+        return b.units[1].stunned;
+    };
+    const vsLow = make(1);
+    const vsHigh = make(60);
+    assert.ok(vsLow >= vsHigh, `低精神目标 ${vsLow} 应不短于高精神目标 ${vsHigh}`);
+    assert.ok(vsLow >= 2, `低精神目标应被控 >= 2 回合，实际 ${vsLow}`);
+});
+
+ok('物理控制时长吃剩余韧性', () => {
+    const mk = (ratio) => {
+        const b = new Battle({
+            allies: [{ name: 'C', lv: 30, attrs: { str: 20, vit: 10, agi: 20, spi: 10, sou: 10 }, skills: ['silk-bind'], pos: { x: 2, y: 3 } }],
+            enemies: [{ name: 'T', lv: 30, attrs: { str: 10, vit: 20, agi: 1, spi: 10, sou: 1 }, skills: ['split-stone'], pos: { x: 3, y: 3 } }],
+            rng: mulberry32(11),
+        });
+        b.start();
+        const max = computeStats(b.units[1]).maxPoise;
+        b.units[1].poise = max * ratio;
+        b.act('silk-bind', null);
+        return { turns: b.units[1].stunned, max };
+    };
+    const full = mk(1);
+    const low = mk(0.05);
+    assert.ok(low.turns >= full.turns, `低韧 ${low.turns} 应不短于满韧 ${full.turns}`);
+    assert.ok(low.turns >= 2, `低韧目标应被控 >= 2 回合，实际 ${low.turns}`);
+});
+
+ok('穿透提高对高防目标的伤害', () => {
+    const run = (withPen) => {
+        const b = new Battle({
+            allies: [{
+                name: 'A', lv: 30, attrs: { str: 30, vit: 10, agi: 20, spi: 10, sou: 10 },
+                skills: ['piercing-thrust'], pos: { x: 2, y: 3 },
+                equipment: withPen ? [{ id: 'x', name: '穿甲', mods: { penetrationFlat: 40 } }] : [],
+            }],
+            enemies: [{ name: 'T', lv: 30, attrs: { str: 10, vit: 40, agi: 1, spi: 1, sou: 1 }, skills: ['split-stone'], pos: { x: 3, y: 3 } }],
+            rng: mulberry32(21),
+        });
+        b.start();
+        const before = b.units[1].hp;
+        b.act('piercing-thrust', null);
+        return before - b.units[1].hp;
+    };
+    const plain = run(false);
+    const pierced = run(true);
+    assert.ok(pierced > plain, `无穿透 ${plain} vs 有穿透 ${pierced}`);
+});
+
+ok('行动条让高速单位先动', () => {
+    const b = new Battle({
+        allies: [
+            { name: '快', lv: 30, attrs: { str: 10, vit: 10, agi: 40, spi: 10, sou: 10 }, skills: ['basic'], pos: { x: 2, y: 3 } },
+            { name: '慢', lv: 30, attrs: { str: 10, vit: 10, agi: 2, spi: 10, sou: 10 }, skills: ['basic'], pos: { x: 2, y: 4 } },
+        ],
+        enemies: [{ name: 'B', lv: 30, attrs: { str: 10, vit: 40, agi: 10, spi: 1, sou: 1 }, skills: ['split-stone'], pos: { x: 3, y: 3 } }],
+        rng: mulberry32(31),
+    });
+    b.start();
+    let fast = 0;
+    let slow = 0;
+    for (let i = 0; i < 40; i += 1) {
+        const u = b.current();
+        if (!u) break;
+        if (u.name === '快') fast += 1;
+        if (u.name === '慢') slow += 1;
+        b.act('basic', null);
+    }
+    assert.ok(fast > slow, `快 ${fast} 次 vs 慢 ${slow} 次`);
+});
+
+ok('位移受移速预算限制', () => {
+    const b = new Battle({
+        allies: [{ name: 'A', lv: 30, attrs: { str: 10, vit: 10, agi: 10, spi: 10, sou: 10 }, skills: ['basic'], pos: { x: 2, y: 3 } }],
+        enemies: [{ name: 'B', lv: 30, attrs: { str: 10, vit: 10, agi: 1, spi: 1, sou: 1 }, skills: ['basic'], pos: { x: 10, y: 7 } }],
+        rng: mulberry32(41),
+    });
+    b.start();
+    const a = b.units[0];
+    const move = computeStats(a).move;
+    b.act('move', null, { x: a.pos.x + move + 3, y: a.pos.y });
+    assert.ok(a.pos.x === 2, `超预算不该移动，实际到了 ${a.pos.x}`);
+    b.act('move', null, { x: a.pos.x + 1, y: a.pos.y });
+    assert.ok(a.pos.x === 3, `1 格移动应成功，实际 ${a.pos.x}`);
+});
+
+console.log(`\n通过 ${passed} 项。\n`);

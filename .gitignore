@@ -1,4 +1,5 @@
-*.mjs
-*.zip
+# 临时验证文件
 chk.mjs
 t-*.mjs
+# 打包产物
+*.zip
