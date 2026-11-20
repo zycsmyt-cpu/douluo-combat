@@ -1659,13 +1659,29 @@ function openItemEditor(ctx, kind, idx) {
           </div>
           <div class="dlc-row">
             <label style="flex:1">特效
-              <textarea data-i="effects" rows="3" placeholder="每行一条，例如 drainMp:30">${esc(effectsToText(s.effects))}</textarea>
+              <textarea data-i="effects" rows="3" placeholder="点下面的按钮添加，也可以手打">${esc(effectsToText(s.effects))}</textarea>
             </label>
           </div>
+          <div class="dlc-row">
+            <select data-eff-type style="flex:1">
+              <option value="stealAll">吸取全属性</option>
+              <option value="steal">吸取单项属性</option>
+              <option value="drainMp">吸取魂力</option>
+              <option value="silence">封印魂技</option>
+              <option value="stun">眩晕</option>
+              <option value="burn">灼烧</option>
+              <option value="bleed">流血</option>
+              <option value="shield">护盾</option>
+              <option value="debuff">减益</option>
+            </select>
+            <input data-eff-stat placeholder="属性: atk/spi…" style="width:110px">
+            <input type="number" data-eff-value placeholder="数值" class="dlc-num" style="width:70px">
+            <input type="number" data-eff-turns placeholder="回合" class="dlc-num" style="width:70px">
+            <button type="button" class="dlc-mini" data-act="eff-add">+ 加特效</button>
+          </div>
           <div class="dlc-note">
-            每行一条：<code>drainMp:30</code> 吸魂力 30%｜<code>steal:all:15:3</code> 偷全属性 15%、3 回合｜
-            <code>steal:atk:20:3</code> 只偷攻击｜<code>silence:2</code> 封印魂技 2 回合｜<code>stun:1</code> 眩晕｜
-            <code>burn:5:2</code> 灼烧 5%、2 回合｜<code>shield:20:2</code> 护盾｜<code>debuff:spd:-20:2</code> 减益
+            选类型、填数值（吸魂力/灼烧/护盾填百分比，偷属性填 15 就是 ±15%），点「+ 加特效」自动写进去。
+            <br>手写也行：<code>steal:all:15:3</code>｜<code>drainMp:30</code>｜<code>silence:2</code>｜<code>stun:1</code>｜<code>burn:5:2</code>｜<code>debuff:spd:-20:2</code>
           </div>`;
     } else if (kind === 'bone') {
         const s = Object.assign({ name: '', slot: 'torso', year: 1000, mods: {} }, src);
@@ -1715,6 +1731,30 @@ function openItemEditor(ctx, kind, idx) {
         if (!btn) { if (e.target === el) back(); return; }
         const a = btn.getAttribute('data-act');
         if (a === 'item-cancel') { back(); return; }
+        if (a === 'eff-add') {
+            const pick = (sel) => el.querySelector(sel);
+            const type = pick('[data-eff-type]') ? pick('[data-eff-type]').value : 'stealAll';
+            const stat = (pick('[data-eff-stat]') ? pick('[data-eff-stat]').value : '').trim();
+            const vRaw = Number(pick('[data-eff-value]') ? pick('[data-eff-value]').value : 0);
+            const tRaw = Number(pick('[data-eff-turns]') ? pick('[data-eff-turns]').value : 0);
+            const v = Number.isFinite(vRaw) && vRaw !== 0 ? vRaw : 0;
+            const t = Number.isFinite(tRaw) && tRaw > 0 ? tRaw : 2;
+            let line = '';
+            if (type === 'stealAll') line = `steal:all:${v || 15}:${t}`;
+            else if (type === 'steal') line = `steal:${stat || 'atk'}:${v || 15}:${t}`;
+            else if (type === 'drainMp') line = `drainMp:${v || 20}`;
+            else if (type === 'silence') line = `silence:${t}`;
+            else if (type === 'stun') line = `stun:${t === 2 ? 1 : t}`;
+            else if (type === 'debuff') line = `debuff:${stat || 'atk'}:${v || -15}:${t}`;
+            else line = `${type}:${v || 20}:${t}`;
+            const ta = pick('[data-i="effects"]');
+            if (ta) {
+                const cur = String(ta.value || '').trimEnd();
+                ta.value = cur ? `${cur}\n${line}` : line;
+            }
+            toast(`加了特效 ${line}`);
+            return;
+        }
         if (a !== 'item-save') return;
 
         const g = (n) => el.querySelector(`[data-i="${n}"]`);
