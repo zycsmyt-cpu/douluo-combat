@@ -53,25 +53,32 @@ if ($SkipGit) {
 Set-Location $src
 
 $changed = git status --porcelain
-if (-not $changed) {
-    Say '[git] 没有改动，不用提交' 'Yellow'
+$ahead = 0
+try { $ahead = [int](git rev-list --count '@{u}..HEAD' 2>$null) } catch { $ahead = 0 }
+
+if (-not $changed -and $ahead -le 0) {
+    Say '[git] 没有改动，也不用推送' 'Yellow'
     exit 0
 }
 
-Say "[git] 改动：" 'Gray'
-$changed | Select-Object -First 20 | ForEach-Object { Say "    $_" 'DarkGray' }
-$more = @($changed).Count - 20
-if ($more -gt 0) { Say "    ……还有 $more 项" 'DarkGray' }
+if ($changed) {
+    Say "[git] 改动：" 'Gray'
+    $changed | Select-Object -First 20 | ForEach-Object { Say "    $_" 'DarkGray' }
+    $more = @($changed).Count - 20
+    if ($more -gt 0) { Say "    ……还有 $more 项" 'DarkGray' }
 
-if (-not $Msg) { $Msg = "chore: 更新 $(Get-Date -Format 'yyyy-MM-dd HH:mm')" }
+    if (-not $Msg) { $Msg = "chore: 更新 $(Get-Date -Format 'yyyy-MM-dd HH:mm')" }
 
-git add -A
-git commit -m $Msg | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    Say '[git] 提交失败' 'Red'
-    exit 1
+    git add -A
+    git commit -m $Msg | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Say '[git] 提交失败' 'Red'
+        exit 1
+    }
+    Say "[git] 已提交：$Msg" 'Green'
+} else {
+    Say "[git] 工作区干净，但有 $ahead 个提交没推" 'Yellow'
 }
-Say "[git] 已提交：$Msg" 'Green'
 
 if ($NoPush) {
     Say '[git] 跳过推送（-NoPush）' 'DarkGray'
