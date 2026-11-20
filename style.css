@@ -5,7 +5,7 @@
     position: fixed;
     right: 24px;
     top: 80px;
-    width: 700px;
+    width: 820px;
     max-width: calc(100vw - 48px);
     height: auto;
     max-height: calc(100vh - 110px);
@@ -75,6 +75,19 @@
 
 #dlc-panel .dlc-icon:hover {
     color: #ff7b72;
+}
+
+#dlc-panel .dlc-head[data-drag] {
+    cursor: move;
+    user-select: none;
+}
+
+#dlc-panel.dragging {
+    user-select: none;
+}
+
+#dlc-panel.dragging .dlc-head[data-drag] {
+    cursor: grabbing;
 }
 
 #dlc-panel .dlc-main {
@@ -400,6 +413,16 @@
     font-weight: 600;
 }
 
+#dlc-panel .dlc-btn.danger {
+    color: #ff9b8a;
+    border-color: rgba(255, 120, 100, 0.4);
+}
+
+#dlc-panel .dlc-btn.danger:hover {
+    background: rgba(255, 90, 70, 0.16);
+    border-color: rgba(255, 120, 100, 0.7);
+}
+
 #dlc-panel .dlc-mini {
     padding: 1px 7px;
     font-size: 11px;
@@ -623,32 +646,39 @@
         top: 60px;
         height: calc(100vh - 90px);
     }
-    #dlc-panel .dlc-main,
-    #dlc-panel .dlc-body {
+    #dlc-panel .dlc-sides {
         grid-template-columns: 1fr;
-        max-height: 300px;
+        max-height: 260px;
     }
 }
 
 /* ===== 地图 + 双栏 ===== */
 
 #dlc-panel .dlc-body {
-    display: grid;
-    grid-template-columns: 348px 300px;
-    gap: 10px;
-    padding: 10px 12px;
+    display: flex;
     flex: 0 0 auto;
+    padding: 10px 12px 6px;
     min-height: 0;
-    max-height: 296px;
-    overflow: hidden;
 }
 
 #dlc-panel .dlc-mapwrap {
     display: flex;
     flex-direction: column;
     gap: 4px;
+    width: 100%;
     min-width: 0;
-    max-width: 348px;
+}
+
+/* 演武场下方：我方 / 敌方 两栏 */
+#dlc-panel .dlc-sides {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 0 12px 6px;
+    flex: 0 0 auto;
+    min-height: 0;
+    max-height: 220px;
+    overflow: hidden;
 }
 
 #dlc-panel .dlc-map {
@@ -659,7 +689,7 @@
     border: 1px solid rgba(120, 170, 255, 0.18);
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.02);
-    aspect-ratio: 3 / 2;
+    width: 100%;
 }
 
 #dlc-panel .dlc-cell {
@@ -680,6 +710,30 @@
 #dlc-panel .dlc-cell:hover { background: rgba(160, 200, 255, 0.18); }
 #dlc-panel .dlc-cell.targetable { box-shadow: inset 0 0 0 1px rgba(255, 120, 120, 0.55); }
 #dlc-panel .dlc-cell.active { box-shadow: inset 0 0 0 1px rgba(255, 209, 102, 0.7); }
+
+/* 场外那一圈：走出去＝撤出演武场 */
+#dlc-panel .dlc-cell.out {
+    background: repeating-linear-gradient(
+        45deg,
+        rgba(255, 255, 255, 0.025),
+        rgba(255, 255, 255, 0.025) 4px,
+        transparent 4px,
+        transparent 8px
+    );
+    border: 1px dashed rgba(255, 255, 255, 0.08);
+    cursor: default;
+}
+
+#dlc-panel .dlc-cell.out.fleezone {
+    border-color: rgba(255, 140, 90, 0.35);
+    cursor: pointer;
+}
+
+#dlc-panel .dlc-cell.out.fleezone:hover {
+    background: rgba(255, 120, 70, 0.2);
+}
+
+#dlc-panel .dlc-maplegend .outzone { color: #ffa477; }
 
 #dlc-panel .dlc-tok {
     font-size: 10px;

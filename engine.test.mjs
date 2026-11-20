@@ -314,4 +314,69 @@ ok('位移受移速预算限制', () => {
     assert.ok(a.pos.x === 3, `1 格移动应成功，实际 ${a.pos.x}`);
 });
 
+console.log('\n[8] 逃跑与认输');
+ok('外圈判定正确', () => {
+    const b = new Battle({
+        allies: [{ name: 'A', lv: 5, attrs: { str: 1, vit: 1, agi: 1, spi: 1, sou: 1 } }],
+        enemies: [{ name: 'B', lv: 5, attrs: { str: 1, vit: 1, agi: 1, spi: 1, sou: 1 } }],
+        rng: mulberry32(11),
+    });
+    assert.strictEqual(b.outRing(-1, 3), true,  'x=-1 是场外');
+    assert.strictEqual(b.outRing(12, 3), true,  'x=12 是场外（宽 12）');
+    assert.strictEqual(b.outRing(0, 3), false,  'x=0 是场内');
+    assert.strictEqual(b.outRing(11, 7), false, 'x=11,y=7 是场内右下角');
+    assert.strictEqual(b.outRing(-2, 3), false, '离太远不算外圈');
+});
+
+ok('走出场外＝逃跑成功，该方判负', () => {
+    const b = new Battle({
+        // 我方高敏保证先手
+        allies: [{ name: '快', lv: 10, attrs: { str: 5, vit: 5, agi: 99, spi: 5, sou: 5 }, pos: { x: 0, y: 3 } }],
+        enemies: [{ name: '慢', lv: 10, attrs: { str: 5, vit: 5, agi: 1, spi: 1, sou: 1 }, pos: { x: 11, y: 3 } }],
+        rng: mulberry32(9),
+    });
+    b.start();
+    const a = b.units[0];
+    assert.strictEqual(b.current().uid, a.uid, '我方应该先手');
+    b.act('move', null, { x: -1, y: 3 });
+    assert.strictEqual(a.alive, false, '逃跑后不再存活');
+    assert.strictEqual(a.fled, true, '应该被标记为逃跑');
+    assert.strictEqual(b.finished, true, '应该结束战斗');
+    assert.strictEqual(b.winner, 'enemy', '我方逃跑＝敌方胜');
+    assert.ok(b.log.some((e) => e.t === 'flee'), '日志里应有 flee 事件');
+});
+
+ok('认输：整队退出且对方胜', () => {
+    const b = new Battle({
+        allies: [
+            { name: 'A', lv: 5, attrs: { str: 5, vit: 5, agi: 5, spi: 5, sou: 5 } },
+            { name: 'A2', lv: 5, attrs: { str: 5, vit: 5, agi: 5, spi: 5, sou: 5 } },
+        ],
+        enemies: [{ name: 'B', lv: 5, attrs: { str: 5, vit: 5, agi: 5, spi: 5, sou: 5 } }],
+        rng: mulberry32(21),
+    });
+    b.start();
+    const ev = b.concede('ally');
+    assert.strictEqual(b.finished, true);
+    assert.strictEqual(b.winner, 'enemy');
+    assert.ok(b.units.filter((u) => u.side === 'ally').every((u) => u.fled && !u.alive), '我方全员离场');
+    assert.ok(ev.some((e) => e.t === 'end'), '要有结束事件');
+});
+
+ok('checkEnd 幂等：不重复写结束日志', () => {
+    const b = new Battle({
+        allies: [{ name: 'A', lv: 5, attrs: { str: 1, vit: 1, agi: 1, spi: 1, sou: 1 } }],
+        enemies: [{ name: 'B', lv: 5, attrs: { str: 1, vit: 1, agi: 1, spi: 1, sou: 1 } }],
+        rng: mulberry32(31),
+    });
+    b.start();
+    b.units.filter((u) => u.side === 'enemy').forEach((u) => { u.alive = false; });
+    const push = (o) => b.log.push(o);
+    b.checkEnd(push);
+    const first = b.log.filter((e) => e.t === 'end').length;
+    b.checkEnd(push);
+    b.checkEnd(push);
+    assert.strictEqual(b.log.filter((e) => e.t === 'end').length, first, '结束日志只能有一条');
+});
+
 console.log(`\n通过 ${passed} 项。\n`);

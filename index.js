@@ -50,6 +50,7 @@ const DEFAULT_SETTINGS = {
     rules: null,     // 规则参数
     customSkills: null,  // 玩家自己写的魂技
     elementConfig: null, // 自定义属性表 / 克制表
+    panelPos: null,      // 浮窗拖过之后记住位置
 };
 
 // 数据结构版本：加了武魂品质/类型/魂骨/功法/站位之后不兼容旧配置
@@ -407,6 +408,9 @@ function renderMap() {
     const H = BATTLEFIELD.height;
     const b = S.battle;
     const actor = b && !b.finished ? b.current() : null;
+    // 战斗中才显示外圈：点外圈＝撤出演武场（逃跑）
+    const showRing = !!(b && !b.finished);
+    const fleeEnabled = showRing && actor && actor.side === 'ally' && !S.pendingSkill;
 
     // 未开战时用队伍配置预览站位
     const units = b
@@ -422,9 +426,20 @@ function renderMap() {
             })),
         ];
 
+    const x0 = showRing ? -1 : 0;
+    const y0 = showRing ? -1 : 0;
+    const x1 = showRing ? W : W - 1;
+    const y1 = showRing ? H : H - 1;
+    const cols = x1 - x0 + 1;
+    const rows = y1 - y0 + 1;
+
     const cells = [];
-    for (let y = 0; y < H; y += 1) {
-        for (let x = 0; x < W; x += 1) {
+    for (let y = y0; y <= y1; y += 1) {
+        for (let x = x0; x <= x1; x += 1) {
+            if (x < 0 || x >= W || y < 0 || y >= H) {
+                cells.push(`<div class="dlc-cell out${fleeEnabled ? ' fleezone' : ''}" data-cell="${x},${y}" title="${fleeEnabled ? '走出去＝撤离演武场（判逃跑）' : '场外'}"></div>`);
+                continue;
+            }
             const u = units.find((it) => it.alive && it.pos && it.pos.x === x && it.pos.y === y);
             const cls = ['dlc-cell'];
             if (x >= BATTLEFIELD.enemyZone.x0) cls.push('ezone');
@@ -440,7 +455,7 @@ function renderMap() {
             cells.push(`<div class="${cls.join(' ')}" data-cell="${x},${y}" title="${x},${y}">${tok}</div>`);
         }
     }
-    return `<div class="dlc-map" style="grid-template-columns:repeat(${W},1fr)">${cells.join('')}</div>`;
+    return `<div class="dlc-map" style="grid-template-columns:repeat(${cols},1fr);aspect-ratio:${cols}/${rows}">${cells.join('')}</div>`;
 }
 
 /* ---------------- 渲染：单位卡 ---------------- */
@@ -608,7 +623,7 @@ function renderPanel() {
         : S.units.enemy.map((c, i) => rosterCard(c, 'enemy', i)).join('');
 
     S.root.innerHTML = `
-    <div class="dlc-head">
+    <div class="dlc-head" data-drag>
       <div class="dlc-title">⚔ 斗魂演武场</div>
       <div class="dlc-round">${roundTxt}</div>
       <div class="dlc-head-actions">
@@ -619,11 +634,15 @@ function renderPanel() {
     <div class="dlc-body">
       <div class="dlc-mapwrap">
         ${renderMap()}
-        <div class="dlc-maplegend"><span class="azone">我方区</span><span class="ezone">敌方区</span><span>切比雪夫距离</span></div>
+        <div class="dlc-maplegend"><span class="azone">我方区</span><span class="ezone">敌方区</span><span>切比雪夫距离</span><span class="outzone">场外＝撤出演武场</span></div>
       </div>
-      <div class="dlc-side">
+    </div>
+    <div class="dlc-sides">
+      <div class="dlc-col">
         <div class="dlc-col-head">我方 <button class="dlc-mini" data-act="add" data-side="ally">+ 单位</button></div>
         <div class="dlc-units">${allyHtml || '<div class="dlc-empty">空</div>'}</div>
+      </div>
+      <div class="dlc-col">
         <div class="dlc-col-head">敌方 <button class="dlc-mini" data-act="add" data-side="enemy">+ 单位</button></div>
         <div class="dlc-units">${enemyHtml || '<div class="dlc-empty">空</div>'}</div>
       </div>
@@ -635,6 +654,7 @@ function renderPanel() {
       <button class="dlc-btn" data-act="write">写入正文</button>
       <button class="dlc-btn" data-act="import">从卡导入</button>
       <button class="dlc-btn" data-act="paste">粘贴文本</button>
+      <button class="dlc-btn danger" data-act="concede">认输</button>
       <button class="dlc-btn" data-act="settings">设置</button>
       <button class="dlc-btn" data-act="probe">探变量</button>
       <button class="dlc-btn" data-act="reset">重置队伍</button>
@@ -1508,6 +1528,13 @@ function onAction(act, el) {
         case 'start':
             buildBattle();
             return;
+        case 'concede': {
+            const bb = S.battle;
+            if (!bb || bb.finished) { toast('现在没有进行中的斗魂'); return; }
+            if (!window.confirm('确定认输？我方全员退出演武场，判负。')) return;
+            afterAction(bb.concede('ally'));
+            return;
+        }
         case 'cancel':
             S.pendingSkill = null;
             render();
@@ -1569,6 +1596,38 @@ function onAction(act, el) {
 }
 
 function bindRoot(root) {
+    // 拖动标题栏移动浮窗
+    let drag = null;
+    root.addEventListener('mousedown', (e) => {
+        if (!e.target.closest('[data-drag]')) return;
+        if (e.target.closest('button, input, label, select')) return;
+        const r = root.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+        root.classList.add('dragging');
+        e.preventDefault();
+    });
+    const onMove = (e) => {
+        if (!drag) return;
+        const w = root.offsetWidth;
+        const h = root.offsetHeight;
+        const x = Math.max(4, Math.min(window.innerWidth - w - 4, e.clientX - drag.dx));
+        const y = Math.max(4, Math.min(window.innerHeight - 48, e.clientY - drag.dy));
+        root.style.left = `${x}px`;
+        root.style.top = `${y}px`;
+        root.style.right = 'auto';
+    };
+    const onUp = () => {
+        if (!drag) return;
+        drag = null;
+        root.classList.remove('dragging');
+        if (S.settings) {
+            S.settings.panelPos = { left: root.style.left, top: root.style.top };
+            saveSettings();
+        }
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+
     // ESC 关面板（弹窗开着时交给 bindModalEsc 处理，这里不动）
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape' || S.modalEl) return;
@@ -1639,6 +1698,13 @@ function buildPanel() {
     root.id = 'dlc-panel';
     document.body.appendChild(root);
     S.root = root;
+    // 恢复上次拖动留下的位置
+    const savedPos = S.settings && S.settings.panelPos;
+    if (savedPos && savedPos.left) {
+        root.style.left = savedPos.left;
+        root.style.top = savedPos.top;
+        root.style.right = 'auto';
+    }
     bindRoot(root);
     try {
         renderPanel();

@@ -460,6 +460,13 @@ export class Battle {
         return x >= 0 && x < this.field.width && y >= 0 && y < this.field.height;
     }
 
+    // 紧贴场地的一圈格子：走进去等于主动撤出演武场
+    outRing(x, y) {
+        const W = this.field.width;
+        const H = this.field.height;
+        return x >= -1 && x <= W && y >= -1 && y <= H && !this.inBounds(x, y);
+    }
+
     occupied(x, y, exceptUid) {
         return this.units.find((u) => u.alive && u.uid !== exceptUid && u.pos.x === x && u.pos.y === y) || null;
     }
@@ -737,6 +744,17 @@ export class Battle {
 
     tryMove(unit, x, y, push) {
         const s = computeStats(unit);
+        // 走到场地外圈 = 主动撤出演武场（逃跑）
+        if (this.outRing(x, y)) {
+            const d = distance(unit.pos, { x, y });
+            const budget = s.move - (unit.moved || 0);
+            if (d > budget) {
+                push({ t: 'sys', text: `${unit.name} 本回合只能再走 ${budget} 格（移速 ${s.move}），够不到场外。` });
+                return false;
+            }
+            this.flee(unit, push);
+            return true;
+        }
         if (!this.inBounds(x, y)) { push({ t: 'sys', text: '目标格超出战场。' }); return false; }
         const d = distance(unit.pos, { x, y });
         const budget = s.move - (unit.moved || 0);
@@ -750,6 +768,37 @@ export class Battle {
         unit.moved = (unit.moved || 0) + d;
         push({ t: 'move', actor: unit.uid, text: `${unit.name} 从 ${from} 移动到 ${x},${y}（${d} 格）。` });
         return true;
+    }
+
+    // 撤出演武场：算逃跑，单位存活但不再参战
+    flee(unit, push) {
+        if (!unit.alive) return;
+        const from = `${unit.pos.x},${unit.pos.y}`;
+        unit.alive = false;
+        unit.fled = true;
+        unit.hp = 0;
+        unit.atb = 0;
+        unit.pos = { x: -1, y: -1 };
+        push({ t: 'flee', actor: unit.uid, text: `${unit.name} 从 ${from} 撤出演武场，逃跑成功。` });
+        this.checkEnd(push);
+    }
+
+    // 认输：整队退出，不写伤害日志，直接判负
+    concede(side) {
+        if (this.finished) return [];
+        const ev = [];
+        const push = (o) => { ev.push(o); this.log.push(o); return o; };
+        const name = side === 'ally' ? '我方' : '敌方';
+        this.units.filter((u) => u.side === side && u.alive).forEach((u) => {
+            u.alive = false;
+            u.fled = true;
+            u.hp = 0;
+        });
+        this.finished = true;
+        this.winner = side === 'ally' ? 'enemy' : 'ally';
+        push({ t: 'flee', text: `${name}认输，全员退出演武场。` });
+        push({ t: 'end', text: `【斗魂结束】${name}认输，${this.winner === 'ally' ? '我方' : '敌方'}胜利。` });
+        return ev;
     }
 
     doDash(actor, target, push) {
@@ -986,12 +1035,23 @@ export class Battle {
     }
 
     checkEnd(push) {
+        if (this.finished) return true;
         const ally = this.aliveOf('ally').length;
         const enemy = this.aliveOf('enemy').length;
         if (ally > 0 && enemy > 0) return false;
         this.finished = true;
         this.winner = ally > 0 ? 'ally' : enemy > 0 ? 'enemy' : 'draw';
-        const txt = this.winner === 'ally' ? '我方胜利。' : this.winner === 'enemy' ? '我方全灭。' : '同归于尽。';
+
+        // 有人是走出去的，报告里说清楚是溃逃还是肉搏打死
+        const fledCount = this.units.filter((u) => u.fled).length;
+        let txt;
+        if (fledCount > 0) {
+            if (this.winner === 'ally') txt = '我方胜利（敌方溃逃）。';
+            else if (this.winner === 'enemy') txt = '我方溃逃，斗魂判负。';
+            else txt = '双方都撤出演武场，判平。';
+        } else {
+            txt = this.winner === 'ally' ? '我方胜利。' : this.winner === 'enemy' ? '我方全灭。' : '同归于尽。';
+        }
         push({ t: 'end', text: `【斗魂结束】${txt}` });
         return true;
     }
@@ -1076,7 +1136,12 @@ export function renderBattleReport(battle) {
     lines.push(`【斗魂】第 ${battle.round} 回合`);
     for (const side of ['ally', 'enemy']) {
         const list = battle.aliveOf(side);
-        if (!list.length) { lines.push(`${side === 'ally' ? '我方' : '敌方'}：全灭`); continue; }
+        if (!list.length) {
+            const ran = battle.units.filter((u) => u.side === side && u.fled).length;
+            const label = ran > 0 ? '全员撤离' : '全灭';
+            lines.push(`${side === 'ally' ? '我方' : '敌方'}：${label}`);
+            continue;
+        }
         lines.push(`${side === 'ally' ? '我方' : '敌方'}：`);
         for (const u of list) {
             const s = statBlock(u);
@@ -1088,7 +1153,18 @@ export function renderBattleReport(battle) {
         }
     }
     if (battle.finished) {
-        lines.push(`【结果】${battle.winner === 'ally' ? '我方胜利' : battle.winner === 'enemy' ? '我方全灭' : '同归于尽'}`);
+        const fledCount = battle.units.filter((u) => u.fled).length;
+        let result;
+        if (fledCount > 0) {
+            result = battle.winner === 'ally' ? '我方胜利（敌方溃逃）'
+                : battle.winner === 'enemy' ? '我方溃逃，判负'
+                    : '双方俱退，判平';
+        } else {
+            result = battle.winner === 'ally' ? '我方胜利'
+                : battle.winner === 'enemy' ? '我方全灭'
+                    : '同归于尽';
+        }
+        lines.push(`【结果】${result}`);
     }
     return lines.join('\n');
 }
