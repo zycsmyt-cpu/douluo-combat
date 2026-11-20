@@ -52,10 +52,24 @@ const DEFAULT_SETTINGS = {
     elementConfig: null, // 自定义属性表 / 克制表
     panelPos: null,      // 浮窗拖过之后记住位置
     fabPos: null,        // 悬浮球拖过之后记住位置
+    ai: null,            // AI 接入配置（OpenAI 兼容）
 };
 
 // 数据结构版本：加了武魂品质/类型/魂骨/功法/站位之后不兼容旧配置
 const SCHEMA = 3;
+
+// AI 接入默认配置：走 OpenAI 兼容的 /chat/completions
+const DEFAULT_AI = {
+    enabled: false,
+    baseUrl: 'https://api.deepseek.com/v1',
+    apiKey: '',
+    model: 'deepseek-chat',
+    temperature: 0.3,
+    maxTokens: 1800,
+    chatCount: 20,
+    sources: { chat: true, character: false, worldbook: false, mvu: false },
+    mode: 'off',   // off / enemy / auto / narrator
+};
 
 const S = {
     settings: { ...DEFAULT_SETTINGS },
@@ -286,8 +300,33 @@ function finishBattle() {
     const b = S.battle;
     if (!b) return;
     pushText(renderBattleReport(b));
+    // narrator 模式：报告照给，再让模型写一段正文
+    if (aiCfg().mode === 'narrator' && aiReady()) aiNarrate(b);
     if (S.settings.autoWrite) flushTexts(true);
     render();
+}
+
+async function aiNarrate(b) {
+    try {
+        logOnly('[AI] 正在把战报写成正文…');
+        render();
+        const report = renderBattleReport(b);
+        const content = await callAI([
+            {
+                role: 'system',
+                content: '你是《斗罗大陆》的叙述者。把战斗报告改写成一段 200-400 字的小说正文，保留关键数值与胜负结果，不要编造报告里没有的伤亡或技能。',
+            },
+            { role: 'user', content: report },
+        ]);
+        if (content && String(content).trim()) {
+            pushText(`【斗魂战报】\n${String(content).trim()}`);
+            render();
+            if (S.settings.autoWrite) flushTexts(true);
+        }
+    } catch (e) {
+        logOnly(`[AI] 战报润色失败：${e.message}`);
+        render();
+    }
 }
 
 function flushTexts(force) {
@@ -376,17 +415,85 @@ function afterAction(ev) {
     pump();
 }
 
+// 把战场压缩成一段文字喂给模型
+function describeBattleForAI(b, actor) {
+    const lines = [`第 ${b.round} 回合，轮到 ${actor.name}（${actor.side === 'ally' ? '我方' : '敌方'}，uid=${actor.uid}）`];
+    for (const u of b.units) {
+        if (!u.alive) continue;
+        const s = statBlock(u);
+        lines.push(`${u.side === 'ally' ? '我方' : '敌方'} ${u.name} uid=${u.uid} HP ${Math.round(s.hp)}/${Math.round(s.maxHp)} 位置(${u.pos.x},${u.pos.y})`);
+    }
+    return lines.join('\n');
+}
+
+// 让模型挑一个技能 + 目标；挑不出来就返回 null，退回规则 AI
+async function aiDecide(actor) {
+    const b = S.battle;
+    if (!b) return null;
+    const skills = b.availableSkills(actor);
+    const skillList = skills
+        .map((s) => `- ${s.id}｜${s.name}｜${s.kind || 'attack'}｜射程 ${s.range || 1}｜耗魂力 ${s.cost || 0}${s.target === 'self' ? '｜自身' : ''}`)
+        .join('\n');
+    const enemies = b.units.filter((u) => u.alive && u.side !== actor.side);
+    const allyList = b.units
+        .filter((u) => u.alive && u.side === actor.side)
+        .map((u) => `${u.uid}=${u.name}`)
+        .join('、');
+
+    const sys = `你是斗罗大陆战斗 AI，只负责给当前行动者选一招。
+只输出 JSON，不要解释：{"skill":"技能id","target":"目标uid 或 null"}
+- skill 从下面列表里选，普通攻击是 "basic"
+- 治疗/增益类选同阵营 uid（${allyList}），攻击类选敌人，自身技能 target 写 null
+- 优先用能打出最大收益的招；血量低时优先治疗或撤退`;
+
+    const user = `可选技能：
+${skillList}
+
+战场：
+${describeBattleForAI(b, actor)}
+
+敌人 uid：${enemies.map((u) => u.uid).join('、') || '无'}`;
+
+    const content = await callAI(
+        [{ role: 'system', content: sys }, { role: 'user', content: user }],
+        { maxTokens: 200, temperature: 0.2 },
+    );
+    const data = extractJson(content);
+    if (!data || !data.skill) return null;
+    const okSkill = data.skill === 'basic' || skills.some((s) => s.id === data.skill);
+    if (!okSkill) return null;
+    return { skill: data.skill, target: data.target || null };
+}
+
 function pump() {
     const b = S.battle;
     if (!b || b.finished) return;
     const actor = b.current();
     if (!actor) return;
-    if (actor.side !== 'enemy') return;
+
+    const mode = aiCfg().mode;
+    // 敌方一律自动；AI 全托管时我方也自动
+    const auto = actor.side === 'enemy' || mode === 'auto';
+    if (!auto) return;
+
     if (S.timer) clearTimeout(S.timer);
-    S.timer = setTimeout(() => {
+    S.timer = setTimeout(async () => {
         S.timer = null;
         if (!S.battle || S.battle.finished) return;
-        const ev = S.battle.autoAct();
+        const useAI = aiReady() && (mode === 'enemy' || mode === 'auto');
+        let ev = null;
+        if (useAI) {
+            try {
+                const decision = await aiDecide(actor);
+                if (decision) {
+                    ev = b.act(decision.skill, decision.target, {});
+                    if (ev && ev.length) logOnly(`[AI] ${actor.name} 选择 ${decision.skill}${decision.target ? ` → ${decision.target}` : ''}`);
+                }
+            } catch (e) {
+                logOnly(`[AI] 决策失败，退回规则 AI：${e.message}`);
+            }
+        }
+        if (!ev) ev = b.autoAct();
         afterAction(ev);
     }, 420);
 }
@@ -655,6 +762,7 @@ function renderPanel() {
       <button class="dlc-btn" data-act="write">写入正文</button>
       <button class="dlc-btn" data-act="import">从卡导入</button>
       <button class="dlc-btn" data-act="paste">粘贴文本</button>
+      <button class="dlc-btn" data-act="ai-parse">AI 解析</button>
       <button class="dlc-btn danger" data-act="concede">认输</button>
       <button class="dlc-btn" data-act="settings">设置</button>
       <button class="dlc-btn" data-act="probe">探变量</button>
@@ -668,6 +776,201 @@ function renderPanel() {
 
 function render() {
     renderPanel();
+}
+
+/* ---------------- AI 接入（OpenAI 兼容） ---------------- */
+
+function aiCfg() {
+    const base = S.settings.ai || {};
+    return Object.assign({}, DEFAULT_AI, base, {
+        sources: Object.assign({}, DEFAULT_AI.sources, base.sources || {}),
+    });
+}
+
+function aiReady() {
+    const c = aiCfg();
+    return !!(c.enabled && c.apiKey && c.baseUrl && c.model);
+}
+
+async function callAI(messages, opts = {}) {
+    const cfg = aiCfg();
+    if (!cfg.apiKey) throw new Error('还没填 API Key（设置 → AI 接入）');
+    const base = String(cfg.baseUrl || '').replace(/\/+$/, '');
+    const url = `${base}/chat/completions`;
+    const body = {
+        model: cfg.model,
+        messages,
+        temperature: opts.temperature != null ? opts.temperature : cfg.temperature,
+        max_tokens: opts.maxTokens || cfg.maxTokens,
+        stream: false,
+    };
+    let res;
+    try {
+        res = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${cfg.apiKey}`,
+            },
+            body: JSON.stringify(body),
+        });
+    } catch (e) {
+        throw new Error(`连不上 ${base}：${e.message}`);
+    }
+    if (!res.ok) {
+        let detail = '';
+        try { detail = (await res.text()).slice(0, 300); } catch (_) { /* 忽略 */ }
+        throw new Error(`HTTP ${res.status}：${detail || res.statusText}`);
+    }
+    const data = await res.json();
+    const content = data && data.choices && data.choices[0] && data.choices[0].message
+        ? data.choices[0].message.content
+        : '';
+    if (!content) throw new Error('模型没返回内容');
+    return String(content);
+}
+
+// 从回复里抠 JSON：模型爱包 ```json 代码块
+function extractJson(text) {
+    if (!text) return null;
+    const fence = String(text).match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const raw = fence ? fence[1] : String(text);
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+        return JSON.parse(raw.slice(start, end + 1));
+    } catch (e) {
+        return null;
+    }
+}
+
+// 按勾选拼上下文喂给模型
+async function collectAIContext() {
+    const cfg = aiCfg();
+    const src = cfg.sources;
+    const c = ctx();
+    const parts = [];
+
+    if (src.chat && c && Array.isArray(c.chat) && c.chat.length) {
+        const n = Math.max(1, Math.min(200, Number(cfg.chatCount) || 20));
+        const msgs = c.chat.slice(-n);
+        const text = msgs.map((m) => {
+            const who = m.is_user ? '用户' : (m.name || '角色');
+            return `${who}：${String(m.mes || '').slice(0, 1200)}`;
+        }).join('\n');
+        parts.push(`【最近 ${msgs.length} 条聊天】\n${text}`);
+    }
+
+    if (src.character) {
+        const ch = c && c.characters ? c.characters[c.this_chid] : null;
+        if (ch) {
+            const bits = [ch.name, ch.description, ch.personality, ch.scenario].filter(Boolean);
+            parts.push(`【角色卡】\n${bits.join('\n').slice(0, 4000)}`);
+        }
+    }
+
+    if (src.worldbook) {
+        try {
+            const wi = (c && (c.worldInfoSettings && c.worldInfoSettings.world_info)) || (c && c.world_info);
+            const names = Array.isArray(wi) ? wi : Object.keys(wi || {});
+            if (names.length) parts.push(`【世界书条目】\n${names.slice(0, 60).join('、')}`);
+        } catch (_) { /* 世界书结构不稳，拿不到就算了 */ }
+    }
+
+    if (src.mvu) {
+        try {
+            const mvu = await gatherMvu();
+            if (mvu.length && mvu[0].filtered && mvu[0].filtered.text) {
+                parts.push(`【MVU 变量】\n${mvu[0].filtered.text.slice(0, 3000)}`);
+            }
+        } catch (_) { /* 忽略 */ }
+    }
+
+    return parts.join('\n\n');
+}
+
+const AI_UNIT_PROMPT = `你是《斗罗大陆》的魂师数据顾问。根据材料提取所有能参与战斗的魂师，**只输出 JSON**，不要解释、不要代码块。
+
+字段要求：
+- side: "ally"（主角方）或 "enemy"（敌对/反派）
+- name: 名字
+- lv: 魂力等级，1-99 的整数
+- quality: trash | normal | fine | epic | divine（废武魂 / 普通 / 良品 / 极品 / 神级）
+- role: attack | control | agility | defense | support | food（强攻 / 控制 / 敏攻 / 防御 / 辅助 / 食物）
+- martial: 武魂名
+- element: metal | wood | water | fire | earth | wind | thunder | light | dark | holy | life | poison | spirit | time | space | destroy
+- note: 一句话依据（可省略）
+
+**绝对不要给力量/体质/敏捷/精神/魂力这类数值**，系统会按成长表自动计算。
+材料里没写的信息按剧情合理推断；实在推不出就用 normal + attack。
+
+输出格式：
+{"units":[{"side":"ally","name":"唐三","lv":29,"quality":"trash","role":"control","martial":"蓝银草","element":"wood"}]}`;
+
+async function aiParseUnits() {
+    if (!aiReady()) { toast('先到设置里启用 AI 并填 API Key'); return; }
+    const material = await collectAIContext();
+    if (!material.trim()) { toast('没收集到内容，检查「AI 读什么」的勾选'); return; }
+    logOnly('[AI] 正在解析…');
+    render();
+    try {
+        const content = await callAI([
+            { role: 'system', content: AI_UNIT_PROMPT },
+            { role: 'user', content: material.slice(0, 24000) },
+        ]);
+        const data = extractJson(content);
+        if (!data || !Array.isArray(data.units) || !data.units.length) {
+            logOnly('[AI] 返回里没找到 units 数组，原始内容：');
+            logOnly(String(content).slice(0, 600));
+            render();
+            return;
+        }
+        applyAIUnits(data.units);
+    } catch (e) {
+        logOnly(`[AI] 解析失败：${e.message}`);
+        render();
+    }
+}
+
+// AI 只定品质/等级/类型，五维走成长表，数值不会飞
+function applyAIUnits(units) {
+    const added = { ally: 0, enemy: 0 };
+    for (const u of units) {
+        const side = u.side === 'enemy' ? 'enemy' : 'ally';
+        const quality = QUALITY[u.quality] ? u.quality : 'normal';
+        const role = ROLES[u.role] ? u.role : 'attack';
+        const lv = Math.max(1, Math.min(99, Math.round(Number(u.lv) || 1)));
+        const element = ELEMENTS[u.element] ? u.element : 'metal';
+
+        S.units[side].push({
+            name: String(u.name || '无名魂师').slice(0, 20),
+            lv,
+            quality,
+            role,
+            martial: String(u.martial || '').slice(0, 20),
+            element,
+            attrs: growthAttrs({ quality, role, lv }),
+            rings: ringsForLevel(lv),
+            skills: [],
+            techniques: [],
+            equipment: [],
+            bones: [],
+            pos: defaultPos(side, S.units[side].length),
+        });
+        added[side] += 1;
+        logOnly(`[AI] +${side === 'ally' ? '我方' : '敌方'} ${u.name} Lv.${lv} ${QUALITY[quality].name}${ROLES[role].name}`);
+    }
+    saveSettings();
+    render();
+    toast(`AI 加了 我方 ${added.ally} 人 / 敌方 ${added.enemy} 人`);
+}
+
+// 按等级发魂环：每 10 级一环
+function ringsForLevel(lv) {
+    const tiers = [100, 1000, 3000, 20000, 20000, 20000, 20000, 20000, 100000];
+    const count = Math.min(9, Math.floor(lv / 10));
+    return tiers.slice(0, count).map((year) => ({ year, skills: [] }));
 }
 
 /* ---------------- 导入 ---------------- */
@@ -1315,6 +1618,7 @@ function openSettings() {
     const s = S.settings;
     const src = s.sources || DEFAULT_SOURCES;
     const rules = s.rules || DEFAULT_RULES;
+    const ai = aiCfg();
     // 属性表是就地改的，取消时整表回滚
     const elemBackup = elementConfigSnapshot();
 
@@ -1331,6 +1635,34 @@ function openSettings() {
             <label class="dlc-check"><input type="checkbox" data-src="mvu" ${src.mvu ? 'checked' : ''}><span>MVU 变量</span><em>走 TavernHelper.getVariables</em></label>
             <label class="dlc-check"><input type="checkbox" data-src="chat" ${src.chat ? 'checked' : ''}><span>聊天记录</span><em>最近 12 条，噪音最大</em></label>
           </div>
+          <div class="dlc-section">AI 接入（OpenAI 兼容）</div>
+          <div class="dlc-grid">
+            <label class="dlc-check"><input type="checkbox" data-ai="enabled" ${ai.enabled ? 'checked' : ''}><span>启用 AI</span><em>关掉就全手动</em></label>
+            <label class="dlc-check"><input type="checkbox" data-ai-src="chat" ${ai.sources.chat ? 'checked' : ''}><span>读聊天记录</span><em>最近 N 条</em></label>
+            <label class="dlc-check"><input type="checkbox" data-ai-src="character" ${ai.sources.character ? 'checked' : ''}><span>读角色卡</span><em>描述 / 性格 / 场景</em></label>
+            <label class="dlc-check"><input type="checkbox" data-ai-src="worldbook" ${ai.sources.worldbook ? 'checked' : ''}><span>读世界书</span><em>条目名列表</em></label>
+            <label class="dlc-check"><input type="checkbox" data-ai-src="mvu" ${ai.sources.mvu ? 'checked' : ''}><span>读 MVU 变量</span><em>结构化数据</em></label>
+          </div>
+          <div class="dlc-row">
+            <label style="flex:2">Base URL <input data-ai="baseUrl" value="${esc(ai.baseUrl)}" placeholder="https://api.deepseek.com/v1"></label>
+          </div>
+          <div class="dlc-row">
+            <label style="flex:2">API Key <input type="password" data-ai="apiKey" value="${esc(ai.apiKey)}" placeholder="sk-..."></label>
+            <label style="flex:1">模型 <input data-ai="model" value="${esc(ai.model)}" placeholder="deepseek-chat"></label>
+          </div>
+          <div class="dlc-row">
+            <label>温度 <input type="number" step="0.1" class="dlc-num" data-ai="temperature" value="${ai.temperature}"></label>
+            <label>聊天条数 <input type="number" class="dlc-num" data-ai="chatCount" value="${ai.chatCount}"></label>
+            <label>推演 <select data-ai="mode">
+              <option value="off" ${ai.mode === 'off' ? 'selected' : ''}>关（全手动）</option>
+              <option value="enemy" ${ai.mode === 'enemy' ? 'selected' : ''}>AI 控敌方</option>
+              <option value="auto" ${ai.mode === 'auto' ? 'selected' : ''}>AI 全托管</option>
+              <option value="narrator" ${ai.mode === 'narrator' ? 'selected' : ''}>AI 只润色战报</option>
+            </select></label>
+            <button type="button" class="dlc-mini" data-act="ai-test">测试连接</button>
+          </div>
+          <div class="dlc-note" data-ai-status>AI 只定品质 / 等级 / 类型，五维仍按成长表算，数值不会飞。</div>
+
           <div class="dlc-section">战斗规则</div>
           <div class="dlc-row">
             <label>防御常数 K <input type="number" class="dlc-num" data-rule="defenseK" value="${rules.defenseK}"></label>
@@ -1401,6 +1733,18 @@ function openSettings() {
         if (a === 'modal-cancel') { applyElementConfig(elemBackup); closeEditor(); return; }
         if (a === 'settings-save') { saveSettingsModal(el); return; }
 
+        if (a === 'ai-test') {
+            const st = el.querySelector('[data-ai-status]');
+            const prev = S.settings.ai;
+            S.settings.ai = readAIFields(el);
+            if (st) st.textContent = '测试中…';
+            callAI([{ role: 'user', content: '只回复两个字：可用' }], { maxTokens: 20 })
+                .then((t) => { if (st) st.textContent = `通了！模型回：${String(t).trim().slice(0, 40)}`; })
+                .catch((e) => { if (st) st.textContent = `失败：${e.message}`; })
+                .finally(() => { S.settings.ai = prev; });
+            return;
+        }
+
         if (a === 'elem-add') {
             const inp = el.querySelector('[data-new-elem]');
             const name = (inp?.value || '').trim();
@@ -1433,7 +1777,27 @@ function openSettings() {
     renderElementEditor(el);
 }
 
+// 从设置表单里读出 AI 配置
+function readAIFields(el) {
+    const ai = {};
+    el.querySelectorAll('[data-ai]').forEach((i) => {
+        const k = i.getAttribute('data-ai');
+        if (i.type === 'checkbox') ai[k] = i.checked;
+        else if (i.type === 'number') ai[k] = Number(i.value) || 0;
+        else ai[k] = String(i.value || '').trim();
+    });
+    const src = {};
+    el.querySelectorAll('[data-ai-src]').forEach((i) => {
+        src[i.getAttribute('data-ai-src')] = i.checked;
+    });
+    ai.sources = Object.assign({}, DEFAULT_AI.sources, src);
+    return Object.assign({}, DEFAULT_AI, ai);
+}
+
 function saveSettingsModal(el) {
+    // AI 配置
+    S.settings.ai = readAIFields(el);
+
     const sources = {};
     el.querySelectorAll('[data-src]').forEach((i) => {
         sources[i.getAttribute('data-src')] = i.checked;
@@ -1573,6 +1937,9 @@ function onAction(act, el) {
             importFromCard(side);
             return;
         }
+        case 'ai-parse':
+            aiParseUnits();
+            return;
         case 'paste': {
             const side = el.getAttribute('data-side') || 'ally';
             importFromPaste(side);
