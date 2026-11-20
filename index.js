@@ -1556,6 +1556,43 @@ function modsToText(mods) {
 
 // 四类物品共用一个弹窗。存的是这个单位自己的对象副本，改谁不影响谁。
 // ctx = { side, index, draft } —— 保存后按草稿重开单位编辑器，免得表单丢掉。
+// 技能特效：文本 ↔ 结构。一行一条，冒号分隔（全角半角都认）
+function parseEffects(text) {
+    const out = [];
+    for (const line of String(text || '').split(/\r?\n/)) {
+        const raw = line.trim();
+        if (!raw) continue;
+        const parts = raw.split(/[:：]/).map((s) => s.trim());
+        const type = parts[0];
+        if (!EFFECT_TYPES.includes(type)) continue;
+        const eff = { type, value: 0, turns: 2, chance: 100, mode: 'pct', label: type };
+        if (type === 'steal' || type === 'debuff' || type === 'buff') {
+            eff.stat = parts[1] || 'atk';
+            eff.value = Number(parts[2]);
+            if (!Number.isFinite(eff.value)) eff.value = type === 'steal' ? 15 : -15;
+            eff.turns = Number(parts[3]) || 2;
+        } else if (type === 'silence' || type === 'stun') {
+            eff.turns = Number(parts[1]) || (type === 'stun' ? 1 : 2);
+        } else {
+            eff.value = Number(parts[1]) || 20;
+            eff.turns = Number(parts[2]) || 2;
+        }
+        out.push(eff);
+    }
+    return out;
+}
+
+function effectsToText(effects) {
+    if (!Array.isArray(effects) || !effects.length) return '';
+    return effects.map((e) => {
+        if (e.type === 'steal' || e.type === 'debuff' || e.type === 'buff') {
+            return `${e.type}:${e.stat || 'atk'}:${e.value || 0}:${e.turns || 2}`;
+        }
+        if (e.type === 'silence' || e.type === 'stun') return `${e.type}:${e.turns || 2}`;
+        return `${e.type}:${e.value || 0}:${e.turns || 2}`;
+    }).join('\n');
+}
+
 function openItemEditor(ctx, kind, idx) {
     const key = ITEM_KEY[kind];
     const list = ctx.draft[key] || [];
@@ -1618,6 +1655,16 @@ function openItemEditor(ctx, kind, idx) {
           <div class="dlc-note">倍率 = 攻击力的倍数，1.0 约等于一次普攻。射程按格算。控制时长：束缚看对方掉了多少韧性，幻境看双方精神力差。</div>
           <div class="dlc-row">
             <label style="flex:1">说明 <input type="text" data-i="desc" value="${esc(s.desc)}" placeholder="会出现在战报里"></label>
+          </div>
+          <div class="dlc-row">
+            <label style="flex:1">特效
+              <textarea data-i="effects" rows="3" placeholder="每行一条，例如 drainMp:30">${esc(effectsToText(s.effects))}</textarea>
+            </label>
+          </div>
+          <div class="dlc-note">
+            每行一条：<code>drainMp:30</code> 吸魂力 30%｜<code>steal:atk:20:3</code> 偷攻击 20%、3 回合｜
+            <code>silence:2</code> 封印魂技 2 回合｜<code>stun:1</code> 眩晕｜<code>burn:5:2</code> 灼烧 5%、2 回合｜
+            <code>shield:20:2</code> 护盾｜<code>debuff:spd:-20:2</code> 减益
           </div>`;
     } else if (kind === 'bone') {
         const s = Object.assign({ name: '', slot: 'torso', year: 1000, mods: {} }, src);
@@ -1697,7 +1744,7 @@ function openItemEditor(ctx, kind, idx) {
                 control: g('control').value,
                 move: g('move').value,
                 desc: txt('desc'),
-                effects: [],
+                effects: parseEffects(txt('effects')),
                 _custom: true,
             };
         } else if (kind === 'bone') {
