@@ -1668,11 +1668,13 @@ function openItemEditor(ctx, kind, idx) {
               <option value="steal">吸取单项属性</option>
               <option value="drainMp">吸取魂力</option>
               <option value="silence">封印魂技</option>
+              <option value="slow">减速（速度 -）</option>
+              <option value="haste">加速（速度 +）</option>
               <option value="stun">眩晕</option>
               <option value="burn">灼烧</option>
               <option value="bleed">流血</option>
               <option value="shield">护盾</option>
-              <option value="debuff">减益</option>
+              <option value="debuff">减益（通用）</option>
             </select>
             <input data-eff-stat placeholder="属性: atk/spi…" style="width:110px">
             <input type="number" data-eff-value placeholder="数值" class="dlc-num" style="width:70px">
@@ -1744,8 +1746,11 @@ function openItemEditor(ctx, kind, idx) {
             else if (type === 'steal') line = `steal:${stat || 'atk'}:${v || 15}:${t}`;
             else if (type === 'drainMp') line = `drainMp:${v || 20}`;
             else if (type === 'silence') line = `silence:${t}`;
+            else if (type === 'slow') line = `debuff:spd:-${Math.abs(v) || 20}:${t}`;
+            else if (type === 'haste') line = `debuff:spd:${Math.abs(v) || 20}:${t}`;
             else if (type === 'stun') line = `stun:${t === 2 ? 1 : t}`;
-            else if (type === 'debuff') line = `debuff:${stat || 'atk'}:${v || -15}:${t}`;
+            // 减益统一取负：填 20 和填 -20 都是降低
+            else if (type === 'debuff') line = `debuff:${stat || 'atk'}:-${Math.abs(v) || 15}:${t}`;
             else line = `${type}:${v || 20}:${t}`;
             const ta = pick('[data-i="effects"]');
             if (ta) {

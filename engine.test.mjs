@@ -500,4 +500,19 @@ ok('吸全属性：五维一起偷，派生跟着变', () => {
     assert.ok(computeStats(a).atk > atk0, `夺取后攻击应上升，原 ${atk0} 现 ${computeStats(a).atk}`);
 });
 
+ok('减速：速度真的降了', () => {
+    const b = battleWithSkill({
+        id: 'slow', name: '迟滞', element: 'water', kind: 'debuff',
+        cost: 0, cd: 0, power: 0.1, poise: 0, range: 4, aoe: 0, target: 'enemy',
+        effects: [{ type: 'debuff', stat: 'spd', value: -30, turns: 3, mode: 'pct', label: '迟滞' }],
+    });
+    b.start();
+    const t = b.units[1];
+    const spd0 = computeStats(t).spd;
+    b.act('slow', t.uid);
+    const spd1 = computeStats(t).spd;
+    assert.ok(spd1 < spd0, `速度应该下降，原 ${spd0} 现 ${spd1}`);
+    assert.ok(Math.abs(spd1 / spd0 - 0.7) < 0.01, `应降到 70%，实际比例 ${(spd1 / spd0).toFixed(3)}`);
+});
+
 console.log(`\n通过 ${passed} 项。\n`);
