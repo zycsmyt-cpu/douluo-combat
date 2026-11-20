@@ -588,6 +588,7 @@ function unitCard(u, compact) {
     }
     if (u.shield > 0) tags.push(`<span class="dlc-tag shield">盾 ${Math.round(u.shield)}</span>`);
     if (u.stunned > 0) tags.push(`<span class="dlc-tag ctrl">控 ${u.stunned}</span>`);
+    if (u.silenced > 0) tags.push(`<span class="dlc-tag ctrl">封技 ${u.silenced}</span>`);
     if (s.broken) tags.push('<span class="dlc-tag break">破防</span>');
 
     const meta = [
@@ -952,9 +953,19 @@ const AI_UNIT_PROMPT = `你是《斗罗大陆》的魂师数据顾问。根据�
 - role: attack | control | agility | defense | support | food（强攻 / 控制 / 敏攻 / 防御 / 辅助 / 食物）
 - martial: 武魂名
 - element: metal | wood | water | fire | earth | wind | thunder | light | dark | holy | life | poison | spirit | time | space | destroy
-- skills: 魂技数组，每个 {name, kind, element, desc}
+- skills: 魂技数组，每个 {name, kind, element, desc, effects?}
   kind: phys(物理) | spirit(精神) | control(控制) | heal(治疗) | buff(增益) | debuff(减益) | shield(护盾)
   desc 控制在 20 字内，别写小作文，省 token
+  effects 是可选的特殊效果数组，按下面写：
+  · {"type":"drainMp","value":20} 吸取魂力（抽目标最大魂力 20% 给自己）
+  · {"type":"steal","stat":"atk","value":15,"turns":2} 偷属性（目标 -15%，自己 +15%，2 回合）
+  · {"type":"silence","turns":2} 封印魂技（目标 2 回合内只能普攻）
+  · {"type":"stun","turns":1} 眩晕
+  · {"type":"burn","value":5,"turns":2} 灼烧 / "bleed" 流血
+  · {"type":"shield","value":20,"turns":2} 护盾
+  · {"type":"debuff","stat":"spd","value":-20,"turns":2} 减益
+  stat 可取 str vit agi spi sou atk def spd hit eva crit
+  **凡是材料里出现「吸取魂力 / 偷取属性 / 封印魂技 / 眩晕 / 灼烧流血 / 护盾」这类描述，必须用 effects 表达**
 - techniques: 功法数组，每个 {name, mods, desc}
 - equipment: 装备数组，每个 {name, slot, quality, mods, desc}
   slot: weapon | armor | accessory
@@ -1022,11 +1033,28 @@ function aiUid(prefix) {
     return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
 }
 
+const EFFECT_TYPES = ['burn', 'bleed', 'stun', 'shield', 'drainMp', 'steal', 'silence', 'debuff', 'buff'];
+
+function normalizeAiEffect(raw) {
+    if (!raw || !EFFECT_TYPES.includes(raw.type)) return null;
+    const out = {
+        type: raw.type,
+        value: clampAiNum(raw.value, -100, 100, 0),
+        turns: clampAiNum(raw.turns, 1, 5, 2),
+        chance: clampAiNum(raw.chance, 1, 100, 100),
+        mode: raw.mode === 'flat' ? 'flat' : 'pct',
+        label: String(raw.label || raw.type).slice(0, 10),
+    };
+    if (raw.stat) out.stat = String(raw.stat).slice(0, 10);
+    return out;
+}
+
 // 魂技：只要名字/类型/属性/说明，数值从模板来
 function normalizeAiSkill(raw, fallbackElement) {
     const kind = SKILL_KINDS.includes(raw.kind) ? raw.kind : 'phys';
     const tpl = SKILL_TEMPLATES[KIND_TO_TEMPLATE[kind]] || SKILL_TEMPLATES.physSingle;
     const el = ELEMENTS[raw.element] ? raw.element : (ELEMENTS[fallbackElement] ? fallbackElement : 'metal');
+    const effects = Array.isArray(raw.effects) ? raw.effects.map((e) => normalizeAiEffect(e)).filter(Boolean) : [];
     return {
         id: aiUid('ai-skill'),
         name: String(raw.name || '无名魂技').slice(0, 20),
@@ -1040,6 +1068,7 @@ function normalizeAiSkill(raw, fallbackElement) {
         aoe: clampAiNum(raw.aoe, 0, 2, tpl.aoe),
         control: raw.control || tpl.control,
         target: kind === 'heal' || kind === 'buff' || kind === 'shield' ? 'ally' : 'enemy',
+        effects,
         desc: String(raw.desc || '').slice(0, 80),
     };
 }

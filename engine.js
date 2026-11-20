@@ -334,6 +334,7 @@ export function createUnit(cfg, side) {
         shieldTurns: 0,
         atb: 0,
         cds: {},
+        silenced: 0,
         stunned: 0,
         brokenTurns: 0,
         poiseTimer: 0,
@@ -569,6 +570,7 @@ export class Battle {
                 for (const b of u.buffs) b.turns -= 1;
                 u.buffs = u.buffs.filter((b) => b.turns > 0);
             }
+            if (u.silenced > 0) u.silenced -= 1;
             if (u.shieldTurns > 0) {
                 u.shieldTurns -= 1;
                 if (u.shieldTurns <= 0) u.shield = 0;
@@ -594,6 +596,8 @@ export class Battle {
 
     availableSkills(unit) {
         const out = [];
+        // 魂技被封印时只能普攻
+        if ((unit.silenced || 0) > 0) return out;
         for (const raw of unit.skills || []) {
             const sk = resolveSkill(raw);
             if (!sk) continue;
@@ -1044,6 +1048,29 @@ export class Battle {
                 target.shield = (target.shield || 0) + amount;
                 target.shieldTurns = Math.max(target.shieldTurns || 0, eff.turns || 2);
                 push({ t: 'shield', target: target.uid, value: amount, text: `${target.name} 获得「${label}」护盾 ${amount}。` });
+            } else if (eff.type === 'drainMp') {
+                // 吸取魂力：按目标最大魂力的百分比抽，给自己
+                const pct = Math.abs(Number(eff.value) || 20);
+                const grab = Math.min(target.mp || 0, Math.max(1, Math.round(computeStats(target).maxMp * (pct / 100))));
+                target.mp = Math.max(0, (target.mp || 0) - grab);
+                const aMax = computeStats(actor).maxMp;
+                actor.mp = Math.min(aMax, (actor.mp || 0) + grab);
+                push({ t: 'drain', target: target.uid, value: grab, text: `${actor.name} 吸取 ${target.name} 魂力 ${grab} 点（${pct}% 上限）。` });
+            } else if (eff.type === 'steal') {
+                // 偷属性：目标降、自己升同样的量
+                const v = Math.abs(Number(eff.value) || 15);
+                const turns = eff.turns || 2;
+                const mode = eff.mode || 'pct';
+                target.buffs = target.buffs || [];
+                target.buffs.push({ stat: eff.stat, value: -v, mode, turns, label });
+                actor.buffs = actor.buffs || [];
+                actor.buffs.push({ stat: eff.stat, value: v, mode, turns, label: `${label}·夺取` });
+                push({ t: 'buff', target: target.uid, text: `${actor.name} 夺取 ${target.name} 的 ${eff.stat} ${v}${mode === 'pct' ? '%' : ''}（${turns} 回合）。` });
+            } else if (eff.type === 'silence') {
+                // 封印敌方魂技：期间只能普攻
+                const turns = eff.turns || 2;
+                target.silenced = Math.max(target.silenced || 0, turns);
+                push({ t: 'ctrl', target: target.uid, text: `${target.name} 的魂技被「${label}」封印 ${turns} 回合。` });
             } else {
                 target.buffs = target.buffs || [];
                 target.buffs.push({

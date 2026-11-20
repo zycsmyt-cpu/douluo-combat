@@ -413,4 +413,72 @@ ok('checkEnd 幂等：不重复写结束日志', () => {
     assert.strictEqual(b.log.filter((e) => e.t === 'end').length, first, '结束日志只能有一条');
 });
 
+console.log('\n[9] 特殊效果：吸魂 / 偷属性 / 封印');
+
+function battleWithSkill(skill, seed = 3) {
+    return new Battle({
+        allies: [{
+            name: '施法者', lv: 30, attrs: { str: 10, vit: 10, agi: 90, spi: 10, sou: 10 },
+            skills: [skill], pos: { x: 2, y: 3 },
+        }],
+        enemies: [{
+            name: '靶子', lv: 10, attrs: { str: 5, vit: 5, agi: 1, spi: 1, sou: 1 },
+            skills: [BASIC_ATTACK], pos: { x: 3, y: 3 },
+        }],
+        rng: mulberry32(seed),
+    });
+}
+
+ok('吸取魂力：目标掉、自己涨', () => {
+    const b = battleWithSkill({
+        id: 'drain-mp', name: '吸魂', element: 'dark', kind: 'spirit',
+        cost: 0, cd: 0, power: 0.05, poise: 0, range: 4, aoe: 0, target: 'enemy',
+        effects: [{ type: 'drainMp', value: 40, turns: 1 }],
+    });
+    b.start();
+    const a = b.units[0];
+    const t = b.units[1];
+    // 先把施法者魂力压到 20%，否则吸满了看不出涨
+    a.mp = Math.round(computeStats(a).maxMp * 0.2);
+    const tMp0 = t.mp;
+    const aMp0 = a.mp;
+    b.act('drain-mp', t.uid);
+    assert.ok(t.mp < tMp0, `目标魂力应该掉，原 ${tMp0} 现 ${t.mp}`);
+    assert.ok(a.mp > aMp0, `自己魂力应该涨，原 ${aMp0} 现 ${a.mp}`);
+});
+
+ok('偷属性：目标 -X，自己 +X', () => {
+    const b = battleWithSkill({
+        id: 'steal-atk', name: '夺攻', element: 'dark', kind: 'debuff',
+        cost: 0, cd: 0, power: 0.1, poise: 0, range: 4, aoe: 0, target: 'enemy',
+        effects: [{ type: 'steal', stat: 'atk', value: 25, turns: 2, label: '夺攻' }],
+    });
+    b.start();
+    const a = b.units[0];
+    const t = b.units[1];
+    b.act('steal-atk', t.uid);
+    const tBuff = (t.buffs || []).find((x) => x.stat === 'atk' && x.value < 0);
+    const aBuff = (a.buffs || []).find((x) => x.stat === 'atk' && x.value > 0);
+    assert.ok(tBuff, '目标应该有 atk 负 buff');
+    assert.ok(aBuff, '自己应该有 atk 正 buff');
+    assert.strictEqual(tBuff.value, -25);
+    assert.strictEqual(aBuff.value, 25);
+});
+
+ok('封印魂技：期间只能用普攻', () => {
+    const b = battleWithSkill({
+        id: 'seal', name: '封印', element: 'holy', kind: 'debuff',
+        cost: 0, cd: 0, power: 0.1, poise: 0, range: 4, aoe: 0, target: 'enemy',
+        effects: [{ type: 'silence', turns: 3, label: '封魂' }],
+    });
+    b.start();
+    const t = b.units[1];
+    b.act('seal', t.uid);
+    assert.ok(t.silenced >= 3, `应该被封 3 回合，实际 ${t.silenced}`);
+    assert.strictEqual(b.availableSkills(t).length, 0, '封印期间可用技能应为空');
+    // 回合推进后递减
+    b.nextRound();
+    assert.ok(t.silenced < 3, '回合推进应该递减');
+});
+
 console.log(`\n通过 ${passed} 项。\n`);
