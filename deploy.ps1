@@ -85,7 +85,8 @@ if ($NoPush) {
     exit 0
 }
 
-git push 2>&1 | ForEach-Object { Say "    $_" 'DarkGray' }
+# 没 upstream 时 -u 会自动补上；已有 upstream 时 -u 是幂等的，不会出错
+git push -u origin main 2>&1 | ForEach-Object { Say "    $_" 'DarkGray' }
 if ($LASTEXITCODE -ne 0) {
     Say '[git] 推送失败，检查网络或凭证' 'Red'
     exit 1
