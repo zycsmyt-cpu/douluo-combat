@@ -316,11 +316,10 @@
 }
 
 #dlc-panel .dlc-log {
-    flex: 0 0 190px;
-    height: 190px;
-    min-height: 0;
-    max-height: none;
-    min-height: 80px;
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 64px;
+    max-height: 210px;
     margin: 6px 12px 0;
     padding: 8px 10px;
     overflow-y: auto;
@@ -677,7 +676,7 @@
     padding: 0 12px 6px;
     flex: 0 0 auto;
     min-height: 0;
-    max-height: 220px;
+    max-height: 180px;
     overflow: hidden;
 }
 
@@ -690,6 +689,8 @@
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.02);
     width: 100%;
+    height: clamp(180px, 26vh, 290px);
+    min-height: 0;
 }
 
 #dlc-panel .dlc-cell {
@@ -933,3 +934,36 @@
 }
 .dlc-chip button:hover,
 .dlc-beatchip button:hover { opacity: 1; }
+/* ===== 常驻悬浮球 ===== */
+#dlc-fab {
+    position: fixed;
+    right: 26px;
+    bottom: 130px;
+    width: 46px;
+    height: 46px;
+    padding: 0;
+    border-radius: 50%;
+    border: 1px solid rgba(120, 170, 255, 0.45);
+    background: linear-gradient(160deg, rgba(38, 60, 110, 0.95), rgba(20, 32, 58, 0.98));
+    color: #cfe2ff;
+    font-size: 20px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    z-index: 99998;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+    user-select: none;
+    touch-action: none;
+}
+
+#dlc-fab:hover {
+    transform: scale(1.08);
+    box-shadow: 0 8px 26px rgba(80, 140, 255, 0.4);
+}
+
+#dlc-fab:active {
+    transform: scale(0.96);
+}

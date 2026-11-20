@@ -744,7 +744,7 @@ export class Battle {
 
     tryMove(unit, x, y, push) {
         const s = computeStats(unit);
-        // 走到场地外圈 = 主动撤出演武场（逃跑）
+        // 走到场地外圈 = 尝试撤出演武场，要过骰子判定
         if (this.outRing(x, y)) {
             const d = distance(unit.pos, { x, y });
             const budget = s.move - (unit.moved || 0);
@@ -752,7 +752,7 @@ export class Battle {
                 push({ t: 'sys', text: `${unit.name} 本回合只能再走 ${budget} 格（移速 ${s.move}），够不到场外。` });
                 return false;
             }
-            this.flee(unit, push);
+            this.attemptEscape(unit, push);
             return true;
         }
         if (!this.inBounds(x, y)) { push({ t: 'sys', text: '目标格超出战场。' }); return false; }
@@ -770,18 +770,38 @@ export class Battle {
         return true;
     }
 
-    // 撤出演武场：算逃跑，单位存活但不再参战
-    flee(unit, push) {
+    // 主动撤出演武场：掷 d100 判定，看闪避和移速
+    attemptEscape(unit, push) {
+        const s = computeStats(unit);
+        const chance = clamp(Math.round(55 + (s.eva - 20) * 0.8 + (s.move - 2) * 4), 15, 92);
+        const roll = this.dice.d100();
+        if (roll <= chance) {
+            const from = `${unit.pos.x},${unit.pos.y}`;
+            unit.alive = false;
+            unit.fled = true;
+            unit.hp = 0;
+            unit.atb = 0;
+            unit.pos = { x: -1, y: -1 };
+            push({ t: 'flee', actor: unit.uid, text: `${unit.name} 从 ${from} 撤离，掷出 ${roll} ≤ ${chance}，逃跑成功。` });
+            this.checkEnd(push);
+            return;
+        }
+        push({ t: 'escape-fail', actor: unit.uid, text: `${unit.name} 想撤出演武场，掷出 ${roll} 超过 ${chance}，被别人拦回来了。` });
+    }
+
+    // 被击飞出界：直接判负退场
+    knockOut(unit, push) {
         if (!unit.alive) return;
-        const from = `${unit.pos.x},${unit.pos.y}`;
         unit.alive = false;
-        unit.fled = true;
+        unit.outOfBound = true;
         unit.hp = 0;
         unit.atb = 0;
         unit.pos = { x: -1, y: -1 };
-        push({ t: 'flee', actor: unit.uid, text: `${unit.name} 从 ${from} 撤出演武场，逃跑成功。` });
+        push({ t: 'ko', actor: unit.uid, text: `${unit.name} 被击出演武场，判负退场。` });
         this.checkEnd(push);
     }
+
+    // 整队认输
 
     // 认输：整队退出，不写伤害日志，直接判负
     concede(side) {
@@ -823,12 +843,20 @@ export class Battle {
     doPush(actor, target, push) {
         const dx = Math.sign(target.pos.x - actor.pos.x) || 1;
         const dy = Math.sign(target.pos.y - actor.pos.y) || 0;
+        let pushed = false;
         for (let i = 0; i < 2; i += 1) {
             const nx = target.pos.x + dx;
             const ny = target.pos.y + dy;
-            if (!this.inBounds(nx, ny) || this.occupied(nx, ny, target.uid)) break;
+            if (this.occupied(nx, ny, target.uid)) break;
+            // 被推出场外：直接判负（不是自己走的，不给骰子）
+            if (!this.inBounds(nx, ny)) {
+                this.knockOut(target, push);
+                return;
+            }
             target.pos = { x: nx, y: ny };
+            pushed = true;
         }
+        if (!pushed) return;
         push({ t: 'move', actor: target.uid, text: `${target.name} 被击退到 ${target.pos.x},${target.pos.y}。` });
     }
 
@@ -1138,7 +1166,8 @@ export function renderBattleReport(battle) {
         const list = battle.aliveOf(side);
         if (!list.length) {
             const ran = battle.units.filter((u) => u.side === side && u.fled).length;
-            const label = ran > 0 ? '全员撤离' : '全灭';
+            const ko = battle.units.filter((u) => u.side === side && u.outOfBound).length;
+            const label = ko > 0 ? '被打出演武场' : ran > 0 ? '全员撤离' : '全灭';
             lines.push(`${side === 'ally' ? '我方' : '敌方'}：${label}`);
             continue;
         }
@@ -1154,8 +1183,17 @@ export function renderBattleReport(battle) {
     }
     if (battle.finished) {
         const fledCount = battle.units.filter((u) => u.fled).length;
+        const koCount = battle.units.filter((u) => u.outOfBound).length;
         let result;
-        if (fledCount > 0) {
+        if (fledCount > 0 && koCount > 0) {
+            result = battle.winner === 'ally' ? '我方胜利（敌方有溃逃、有出界）'
+                : battle.winner === 'enemy' ? '我方溃逃/出界，判负'
+                    : '双方俱退，判平';
+        } else if (koCount > 0) {
+            result = battle.winner === 'ally' ? '我方胜利（敌方被打出场外）'
+                : battle.winner === 'enemy' ? '我方被打出演武场，判负'
+                    : '同归于尽';
+        } else if (fledCount > 0) {
             result = battle.winner === 'ally' ? '我方胜利（敌方溃逃）'
                 : battle.winner === 'enemy' ? '我方溃逃，判负'
                     : '双方俱退，判平';

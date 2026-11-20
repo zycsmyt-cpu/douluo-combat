@@ -51,6 +51,7 @@ const DEFAULT_SETTINGS = {
     customSkills: null,  // 玩家自己写的魂技
     elementConfig: null, // 自定义属性表 / 克制表
     panelPos: null,      // 浮窗拖过之后记住位置
+    fabPos: null,        // 悬浮球拖过之后记住位置
 };
 
 // 数据结构版本：加了武魂品质/类型/魂骨/功法/站位之后不兼容旧配置
@@ -455,7 +456,7 @@ function renderMap() {
             cells.push(`<div class="${cls.join(' ')}" data-cell="${x},${y}" title="${x},${y}">${tok}</div>`);
         }
     }
-    return `<div class="dlc-map" style="grid-template-columns:repeat(${cols},1fr);aspect-ratio:${cols}/${rows}">${cells.join('')}</div>`;
+    return `<div class="dlc-map" style="grid-template-columns:repeat(${cols},1fr)">${cells.join('')}</div>`;
 }
 
 /* ---------------- 渲染：单位卡 ---------------- */
@@ -1689,6 +1690,74 @@ function bindRoot(root) {
 
 /* ---------------- 挂载 ---------------- */
 
+// 打开 / 关闭面板（悬浮球和扩展菜单都用它）
+function togglePanel() {
+    if (!S.root) buildPanel();
+    if (!S.root) return;
+    if (S.root.classList.contains('open')) {
+        S.root.classList.remove('open');
+        return;
+    }
+    S.root.classList.add('open');
+    try {
+        renderPanel();
+    } catch (e) {
+        console.error('[douluo-combat] renderPanel failed', e);
+    }
+}
+
+// 常驻悬浮球：可拖动，点一下开关面板
+function buildFab() {
+    if (document.getElementById('dlc-fab')) return;
+    const fab = document.createElement('button');
+    fab.id = 'dlc-fab';
+    fab.type = 'button';
+    fab.title = '斗魂演武场（点击打开 / 拖动换位置）';
+    fab.textContent = '⚔';
+    document.body.appendChild(fab);
+
+    const saved = S.settings && S.settings.fabPos;
+    if (saved && saved.left) {
+        fab.style.left = saved.left;
+        fab.style.top = saved.top;
+        fab.style.right = 'auto';
+        fab.style.bottom = 'auto';
+    }
+
+    let drag = null;
+    let moved = false;
+    fab.addEventListener('mousedown', (e) => {
+        const r = fab.getBoundingClientRect();
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, sx: e.clientX, sy: e.clientY };
+        moved = false;
+        e.preventDefault();
+    });
+    window.addEventListener('mousemove', (e) => {
+        if (!drag) return;
+        if (!moved && (Math.abs(e.clientX - drag.sx) > 3 || Math.abs(e.clientY - drag.sy) > 3)) moved = true;
+        if (!moved) return;
+        const x = Math.max(4, Math.min(window.innerWidth - 54, e.clientX - drag.dx));
+        const y = Math.max(4, Math.min(window.innerHeight - 54, e.clientY - drag.dy));
+        fab.style.left = `${x}px`;
+        fab.style.top = `${y}px`;
+        fab.style.right = 'auto';
+        fab.style.bottom = 'auto';
+    });
+    window.addEventListener('mouseup', () => {
+        if (!drag) return;
+        const wasDrag = moved;
+        drag = null;
+        if (wasDrag) {
+            if (S.settings) {
+                S.settings.fabPos = { left: fab.style.left, top: fab.style.top };
+                saveSettings();
+            }
+        } else {
+            togglePanel();
+        }
+    });
+}
+
 function buildPanel() {
     if (document.getElementById('dlc-panel')) {
         S.root = document.getElementById('dlc-panel');
@@ -1755,6 +1824,7 @@ function mountSettingsEntry() {
 async function init() {
     await ensureSettings();
     buildPanel();
+    buildFab();
     try {
         runDiagnostics();
         render();

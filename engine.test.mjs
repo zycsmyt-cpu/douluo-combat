@@ -328,22 +328,56 @@ ok('外圈判定正确', () => {
     assert.strictEqual(b.outRing(-2, 3), false, '离太远不算外圈');
 });
 
-ok('走出场外＝逃跑成功，该方判负', () => {
+ok('主动撤离要过骰子：有成功也有失败', () => {
+    let success = false;
+    let fail = false;
+    let escapedSeed = null;
+    for (let seed = 1; seed <= 200 && !(success && fail); seed++) {
+        const b = new Battle({
+            allies: [{ name: '快', lv: 10, attrs: { str: 5, vit: 5, agi: 99, spi: 5, sou: 5 }, pos: { x: 0, y: 3 } }],
+            enemies: [{ name: '慢', lv: 10, attrs: { str: 5, vit: 5, agi: 1, spi: 1, sou: 1 }, pos: { x: 11, y: 3 } }],
+            rng: mulberry32(seed),
+        });
+        b.start();
+        const a = b.units[0];
+        if (b.current().uid !== a.uid) continue;
+        b.act('move', null, { x: -1, y: 3 });
+        if (a.fled) {
+            if (!success) { success = true; escapedSeed = seed; }
+        } else if (!fail) {
+            fail = true;
+        }
+    }
+    assert.ok(success, '应该有 seed 撤离成功');
+    assert.ok(fail, '应该有 seed 撤离失败（被拦回来）');
+
+    // 成功那次的战斗状态
     const b = new Battle({
-        // 我方高敏保证先手
         allies: [{ name: '快', lv: 10, attrs: { str: 5, vit: 5, agi: 99, spi: 5, sou: 5 }, pos: { x: 0, y: 3 } }],
         enemies: [{ name: '慢', lv: 10, attrs: { str: 5, vit: 5, agi: 1, spi: 1, sou: 1 }, pos: { x: 11, y: 3 } }],
-        rng: mulberry32(9),
+        rng: mulberry32(escapedSeed),
     });
     b.start();
-    const a = b.units[0];
-    assert.strictEqual(b.current().uid, a.uid, '我方应该先手');
     b.act('move', null, { x: -1, y: 3 });
-    assert.strictEqual(a.alive, false, '逃跑后不再存活');
-    assert.strictEqual(a.fled, true, '应该被标记为逃跑');
-    assert.strictEqual(b.finished, true, '应该结束战斗');
-    assert.strictEqual(b.winner, 'enemy', '我方逃跑＝敌方胜');
-    assert.ok(b.log.some((e) => e.t === 'flee'), '日志里应有 flee 事件');
+    assert.strictEqual(b.finished, true, '撤离成功应该结束战斗');
+    assert.strictEqual(b.winner, 'enemy', '我方撤离＝敌方胜');
+});
+
+ok('被击飞出界＝直接判负，不给骰子', () => {
+    const b = new Battle({
+        allies: [{ name: '推', lv: 50, attrs: { str: 60, vit: 20, agi: 30, spi: 5, sou: 10 }, pos: { x: 1, y: 3 } }],
+        enemies: [{ name: '边', lv: 10, attrs: { str: 5, vit: 5, agi: 1, spi: 1, sou: 1 }, pos: { x: 0, y: 3 } }],
+        rng: mulberry32(5),
+    });
+    b.start();
+    const target = b.units[1];
+    // 直接调击退：目标在 x=0，往左退就是场外
+    const ev = [];
+    const push = (o) => { ev.push(o); b.log.push(o); };
+    b.doPush(b.units[0], target, push);
+    assert.strictEqual(target.alive, false, '被推出界应该退场');
+    assert.strictEqual(target.outOfBound, true, '应该标记为出界');
+    assert.ok(ev.some((e) => e.t === 'ko'), '日志应有 ko 事件');
 });
 
 ok('认输：整队退出且对方胜', () => {
