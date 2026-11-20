@@ -66,7 +66,7 @@ const DEFAULT_AI = {
     apiKey: '',
     model: 'deepseek-chat',
     temperature: 0.3,
-    maxTokens: 1800,
+    maxTokens: 3000,
     chatCount: 20,
     sources: { chat: true, character: false, worldbook: false, mvu: false },
     mode: 'off',   // off / enemy / auto / narrator
@@ -894,7 +894,7 @@ async function collectAIContext() {
 
 const AI_UNIT_PROMPT = `你是《斗罗大陆》的魂师数据顾问。根据材料提取所有能参与战斗的魂师，**只输出 JSON**，不要解释、不要代码块。
 
-字段要求：
+每个单位的字段：
 - side: "ally"（主角方）或 "enemy"（敌对/反派）
 - name: 名字
 - lv: 魂力等级，1-99 的整数
@@ -902,13 +902,127 @@ const AI_UNIT_PROMPT = `你是《斗罗大陆》的魂师数据顾问。根据�
 - role: attack | control | agility | defense | support | food（强攻 / 控制 / 敏攻 / 防御 / 辅助 / 食物）
 - martial: 武魂名
 - element: metal | wood | water | fire | earth | wind | thunder | light | dark | holy | life | poison | spirit | time | space | destroy
+- skills: 魂技数组，每个 {name, kind, element, desc}
+  kind: phys(物理) | spirit(精神) | control(控制) | heal(治疗) | buff(增益) | debuff(减益) | shield(护盾)
+- techniques: 功法数组，每个 {name, mods, desc}
+- equipment: 装备数组，每个 {name, slot, quality, mods, desc}
+  slot: weapon | armor | accessory
+- bones: 魂骨数组，每个 {name, slot, year, mods, desc}
+  slot: head | torso | leftArm | rightArm | leftLeg | rightLeg
+  year: 年限，100=十年 1000=百年 10000=万年 100000=十万年
 - note: 一句话依据（可省略）
 
-**绝对不要给力量/体质/敏捷/精神/魂力这类数值**，系统会按成长表自动计算。
-材料里没写的信息按剧情合理推断；实在推不出就用 normal + attack。
+mods 只能用下面这些 key，不要自己编：
+- 五维：str vit agi spi sou
+- 派生：atk def spd hit eva crit critDmg penetration move atkSpd maxHp maxMp maxPoise
+- 百分比：名字后加 Pct，如 atkPct critPct critDmgPct defPct spdPct hpPct penetrationPct poiseDmgPct ctrlPct
+- 固定值：名字后加 Flat，如 penetrationFlat moveFlat atkSpdFlat
+
+硬性要求：
+- **魂技只给名字/类型/属性/说明，不要给倍率、耗魂力、冷却、射程这些数值**，系统按类型套模板
+- **不要给力量/体质/敏捷/精神/魂力这类五维数值**，系统按成长表算
+- 功法/装备/魂骨的 mods 可以给，但要克制，单项不超过 30
+- 材料里没写就按剧情合理推断；实在推不出就只给基础字段
 
 输出格式：
-{"units":[{"side":"ally","name":"唐三","lv":29,"quality":"trash","role":"control","martial":"蓝银草","element":"wood"}]}`;
+{"units":[{"side":"ally","name":"唐三","lv":29,"quality":"trash","role":"control","martial":"蓝银草","element":"wood",
+"skills":[{"name":"缠绕","kind":"control","element":"wood","desc":"蓝银草远程捆缚"}],
+"techniques":[{"name":"玄天功","mods":{"strPct":8,"spiPct":15},"desc":"玄门正宗心法"}],
+"equipment":[{"name":"精铁剑","slot":"weapon","quality":"normal","mods":{"atk":18},"desc":"普通制式短剑"}],
+"bones":[{"name":"千年右臂魂骨","slot":"rightArm","year":1000,"mods":{"str":22},"desc":"力发于臂"}]}]}`;
+
+/* AI 输出 → 内部结构的转换 */
+
+const SKILL_KINDS = ['phys', 'spirit', 'control', 'heal', 'buff', 'debuff', 'shield'];
+const KIND_TO_TEMPLATE = {
+    phys: 'physSingle',
+    spirit: 'spiritSingle',
+    control: 'controlPhys',
+    heal: 'heal',
+    buff: 'buff',
+    debuff: 'debuff',
+    shield: 'shield',
+};
+const BONE_SLOTS_AI = ['head', 'torso', 'leftArm', 'rightArm', 'leftLeg', 'rightLeg'];
+
+function clampAiNum(v, lo, hi, fallback) {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.max(lo, Math.min(hi, n));
+}
+
+// mods 白名单式清洗：key 只允许字母 + 可选 Pct/Flat 后缀，值夹在 ±100
+function sanitizeMods(mods) {
+    if (!mods || typeof mods !== 'object') return {};
+    const out = {};
+    for (const [k, v] of Object.entries(mods)) {
+        if (!/^[a-zA-Z]{2,20}(Pct|Flat)?$/.test(k)) continue;
+        const n = Number(v);
+        if (!Number.isFinite(n)) continue;
+        out[k] = Math.max(-100, Math.min(100, n));
+    }
+    return out;
+}
+
+function aiUid(prefix) {
+    return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+}
+
+// 魂技：只要名字/类型/属性/说明，数值从模板来
+function normalizeAiSkill(raw, fallbackElement) {
+    const kind = SKILL_KINDS.includes(raw.kind) ? raw.kind : 'phys';
+    const tpl = SKILL_TEMPLATES[KIND_TO_TEMPLATE[kind]] || SKILL_TEMPLATES.physSingle;
+    const el = ELEMENTS[raw.element] ? raw.element : (ELEMENTS[fallbackElement] ? fallbackElement : 'metal');
+    return {
+        id: aiUid('ai-skill'),
+        name: String(raw.name || '无名魂技').slice(0, 20),
+        element: el,
+        kind,
+        cost: clampAiNum(raw.cost, 1, 40, tpl.cost),
+        cd: clampAiNum(raw.cd, 0, 6, tpl.cd || 0),
+        power: clampAiNum(raw.power, 0, 3, tpl.power),
+        poise: clampAiNum(raw.poise, 0, 80, tpl.poise),
+        range: clampAiNum(raw.range, 0, 8, tpl.range),
+        aoe: clampAiNum(raw.aoe, 0, 2, tpl.aoe),
+        control: raw.control || tpl.control,
+        target: kind === 'heal' || kind === 'buff' || kind === 'shield' ? 'ally' : 'enemy',
+        desc: String(raw.desc || '').slice(0, 80),
+    };
+}
+
+function normalizeAiTech(raw) {
+    return {
+        id: aiUid('ai-tech'),
+        name: String(raw.name || '无名功法').slice(0, 20),
+        rarity: ['green', 'blue', 'purple', 'gold'].includes(raw.rarity) ? raw.rarity : 'blue',
+        mods: sanitizeMods(raw.mods),
+        desc: String(raw.desc || '').slice(0, 80),
+    };
+}
+
+function normalizeAiEquip(raw) {
+    const slot = ['weapon', 'armor', 'accessory'].includes(raw.slot) ? raw.slot : 'accessory';
+    return {
+        id: aiUid('ai-eq'),
+        name: String(raw.name || '无名装备').slice(0, 20),
+        slot,
+        quality: QUALITY[raw.quality] ? raw.quality : 'normal',
+        mods: sanitizeMods(raw.mods),
+        desc: String(raw.desc || '').slice(0, 80),
+    };
+}
+
+function normalizeAiBone(raw) {
+    const slot = BONE_SLOTS_AI.includes(raw.slot) ? raw.slot : 'rightArm';
+    return {
+        id: aiUid('ai-bone'),
+        name: String(raw.name || '无名魂骨').slice(0, 20),
+        slot,
+        year: clampAiNum(raw.year, 100, 100000, 1000),
+        mods: sanitizeMods(raw.mods),
+        desc: String(raw.desc || '').slice(0, 80),
+    };
+}
 
 async function aiParseUnits() {
     if (!aiReady()) { toast('先到设置里启用 AI 并填 API Key'); return; }
@@ -945,6 +1059,11 @@ function applyAIUnits(units) {
         const lv = Math.max(1, Math.min(99, Math.round(Number(u.lv) || 1)));
         const element = ELEMENTS[u.element] ? u.element : 'metal';
 
+        const skills = Array.isArray(u.skills) ? u.skills.map((s) => normalizeAiSkill(s, element)) : [];
+        const techniques = Array.isArray(u.techniques) ? u.techniques.map((t) => normalizeAiTech(t)) : [];
+        const equipment = Array.isArray(u.equipment) ? u.equipment.map((e) => normalizeAiEquip(e)) : [];
+        const bones = Array.isArray(u.bones) ? u.bones.map((b) => normalizeAiBone(b)) : [];
+
         S.units[side].push({
             name: String(u.name || '无名魂师').slice(0, 20),
             lv,
@@ -954,14 +1073,15 @@ function applyAIUnits(units) {
             element,
             attrs: growthAttrs({ quality, role, lv }),
             rings: ringsForLevel(lv),
-            skills: [],
-            techniques: [],
-            equipment: [],
-            bones: [],
+            skills,
+            techniques,
+            equipment,
+            bones,
             pos: defaultPos(side, S.units[side].length),
         });
         added[side] += 1;
-        logOnly(`[AI] +${side === 'ally' ? '我方' : '敌方'} ${u.name} Lv.${lv} ${QUALITY[quality].name}${ROLES[role].name}`);
+        logOnly(`[AI] +${side === 'ally' ? '我方' : '敌方'} ${u.name} Lv.${lv} ${QUALITY[quality].name}${ROLES[role].name}`
+            + `｜魂技 ${skills.length}｜功法 ${techniques.length}｜装备 ${equipment.length}｜魂骨 ${bones.length}`);
     }
     saveSettings();
     render();
