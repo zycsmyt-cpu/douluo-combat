@@ -35,7 +35,7 @@ const MODULE = 'douluo-combat';
 
 // 战斗规则的可调参数（面板「设置」里能改）
 const DEFAULT_RULES = {
-    defenseK: 120,        // 防御减免常数：减伤率 = 有效防御 / (有效防御 + K)
+    defenseK: 190,        // 防御减免常数：减伤率 = 有效防御 / (有效防御 + K)，K 越大减伤越轻
     penCap: 80,           // 穿透上限 %
     controlMaxTurns: 4,   // 控制最多持续回合
     atbSpeed: 0.08,       // 行动条积累系数
@@ -561,7 +561,10 @@ function renderMap() {
             const tok = u
                 ? `<span class="dlc-tok ${u.side}">${esc(tokenLabel(u.name))}</span>`
                 : '';
-            cells.push(`<div class="${cls.join(' ')}" data-cell="${x},${y}" title="${x},${y}">${tok}</div>`);
+            // 战斗前才能拖拽摆位
+            const canDrag = u && !b;
+            const dragAttr = canDrag ? ` draggable="true" data-drag-uid="${u.uid}"` : '';
+            cells.push(`<div class="${cls.join(' ')}" data-cell="${x},${y}" title="${x},${y}"${dragAttr}>${tok}</div>`);
         }
     }
     return `<div class="dlc-map" style="grid-template-columns:repeat(${cols},1fr)">${cells.join('')}</div>`;
@@ -722,6 +725,9 @@ function renderActionBar() {
 
 function renderPanel() {
     if (!S.root) return;
+    // 记住单位列表的滚动位置：重绘后恢复，连续调站位或拖拽时不会跳回顶部
+    const scrollKeep = [];
+    S.root.querySelectorAll('.dlc-units').forEach((el) => scrollKeep.push(el.scrollTop));
     const b = S.battle;
     const roundTxt = b ? `第 ${b.round} 回合${b.finished ? '（已结束）' : ''}` : '未开始';
 
@@ -775,6 +781,11 @@ function renderPanel() {
 
     const logEl = S.root.querySelector('#dlc-log');
     if (logEl) logEl.scrollTop = logEl.scrollHeight;
+
+    // 恢复单位列表滚动位置
+    S.root.querySelectorAll('.dlc-units').forEach((el, i) => {
+        if (scrollKeep[i] != null) el.scrollTop = scrollKeep[i];
+    });
 }
 
 function render() {
@@ -2210,7 +2221,9 @@ function onAction(act, el) {
         case 'write':
             flushTexts(true);
             return;
-        case 'reset':
+        case 'reset': {
+            const total = S.units.ally.length + S.units.enemy.length;
+            if (total > 0 && !window.confirm(`重置队伍会把当前 ${total} 个单位（包括 AI 解析出来的）换成预设单位，确定？`)) return;
             S.battle = null;
             S.pendingSkill = null;
             S.pendingTexts = [];
@@ -2219,6 +2232,7 @@ function onAction(act, el) {
             resetToPresets();
             render();
             return;
+        }
         case 'seed':
             S.settings.seed = String(Math.floor(Math.random() * 100000));
             toast(`骰子种子：${S.settings.seed}`);
@@ -2264,6 +2278,25 @@ function onAction(act, el) {
         default:
             return;
     }
+}
+
+// 拖拽落点：把地图上的单位挪到指定格
+function dropUnitTo(uid, x, y) {
+    if (S.battle) { toast('战斗中不能拖拽，点空格移动'); return; }
+    const m = /^p-([ae])(\d+)$/.exec(String(uid || ''));
+    if (!m) return;
+    const side = m[1] === 'a' ? 'ally' : 'enemy';
+    const idx = Number(m[2]);
+    const u = S.units[side] && S.units[side][idx];
+    if (!u) return;
+    if (x < 0 || x >= BATTLEFIELD.width || y < 0 || y >= BATTLEFIELD.height) return;
+    const taken = [...S.units.ally, ...S.units.enemy].some(
+        (o) => o && o !== u && o.pos && o.pos.x === x && o.pos.y === y,
+    );
+    if (taken) { toast('那格已经有人了'); return; }
+    u.pos = { x, y };
+    saveSettings();
+    render();
 }
 
 function bindRoot(root) {
@@ -2330,6 +2363,32 @@ function bindRoot(root) {
         if (!S.root || !S.root.classList.contains('open')) return;
         S.root.classList.remove('open');
     });
+    // 拖拽场上单位摆位（仅战斗前）
+    root.addEventListener('dragstart', (e) => {
+        const cell = e.target.closest('[data-drag-uid]');
+        const uid = cell ? cell.getAttribute('data-drag-uid') : '';
+        if (!uid) { e.preventDefault(); return; }
+        if (e.dataTransfer) {
+            e.dataTransfer.setData('text/plain', uid);
+            e.dataTransfer.effectAllowed = 'move';
+        }
+    });
+    root.addEventListener('dragover', (e) => {
+        if (!e.target.closest('[data-cell]')) return;
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    });
+    root.addEventListener('drop', (e) => {
+        const cell = e.target.closest('[data-cell]');
+        if (!cell) return;
+        e.preventDefault();
+        const uid = e.dataTransfer ? e.dataTransfer.getData('text/plain') : '';
+        if (!uid) return;
+        const xy = String(cell.getAttribute('data-cell') || '').split(',').map(Number);
+        if (xy.length !== 2 || xy.some((n) => !Number.isFinite(n))) return;
+        dropUnitTo(uid, xy[0], xy[1]);
+    });
+
     root.addEventListener('click', (e) => {
         const nudgeEl = e.target.closest('[data-nudge]');
         if (nudgeEl) {

@@ -28,9 +28,9 @@ export const resolveEquip = (x) => (!x ? null : (typeof x === 'string' ? findEqu
 export const idOf = (x) => (typeof x === 'string' ? x : (x && x.id) || '');
 
 export const CONFIG = {
-    defenseK: 120,          // 减免率 = 有效防御 / (有效防御 + K)
-    hitMin: 5,
-    hitMax: 98,
+    defenseK: 190,          // 减免率 = 有效防御 / (有效防御 + K)，K 越大减伤越轻
+    hitMin: 20,
+    hitMax: 99,
     critCap: 90,
     penCap: 80,             // 穿透上限 %
     breakMultiplier: 1.5,   // 破防期间受伤倍率
@@ -217,7 +217,7 @@ export function computeStats(unit) {
     const s = {
         maxHp: 60 + a.vit * 12 + lv * 6 + ringHp,
         maxMp: 30 + a.sou * 10 + lv * 2 + ringMp,
-        atk: 8 + a.str * 2.2 + lv * 1.2 + ringAtk,
+        atk: 8 + a.str * 2.7 + lv * 1.5 + ringAtk,
         def: 4 + a.str * 1.1 + a.vit * 1.4,
         satk: 8 + a.spi * 2.2 + a.sou * 0.8 + ringSatk,
         sdef: 4 + a.spi * 1.2 + a.sou * 1.2,
@@ -279,7 +279,8 @@ export function computeStats(unit) {
 
     // ---------- 6. 收敛 ----------
     s.crit = clamp(s.crit, 0, CONFIG.critCap);
-    s.hit = clamp(s.hit, CONFIG.hitMin, CONFIG.hitMax);
+    // 命中值不封顶，最终命中率在判定时再夹
+    s.hit = Math.max(0, s.hit);
     s.eva = Math.max(0, s.eva);
     s.penetration = clamp(s.penetration, 0, CONFIG.penCap);
     s.maxHp = Math.max(1, s.maxHp);
@@ -892,9 +893,13 @@ export class Battle {
             return;
         }
 
-        // 命中判定
+        // 命中判定：以 90% 为基线，命中与闪避的差值按 0.25 折算，避免高敏直接锁死
         const t0 = computeStats(target);
-        const need = clamp(Math.round(a.hit - t0.eva + (skill.hitMod || 0)), CONFIG.hitMin, CONFIG.hitMax);
+        const need = clamp(
+            Math.round(90 + (a.hit - t0.eva - 74) * 0.25 + (skill.hitMod || 0)),
+            CONFIG.hitMin,
+            CONFIG.hitMax,
+        );
         const hitRoll = this.dice.d100();
         if (hitRoll > need) {
             push({
@@ -920,6 +925,9 @@ export class Battle {
         let dmg = atkSide * (skill.power || 1) * (1 - mitigation);
         if (crit) dmg *= a.critDmg / 100;
         if (target.brokenTurns > 0) dmg *= CONFIG.breakMultiplier;
+        // 等级压制：每差一级 ±2.5%，最多 +90% / -55%
+        const lvDiff = (actor.lv || 1) - (target.lv || 1);
+        dmg *= 1 + clamp(lvDiff * 0.025, -0.55, 0.9);
         const elemMul = elementMultiplier(skill.element || actor.element, target.element);
         const elemRel = elementRelation(skill.element || actor.element, target.element);
         dmg *= elemMul;

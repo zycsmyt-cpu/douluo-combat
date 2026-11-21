@@ -42,8 +42,8 @@ ok('基础单位数值正确', () => {
     const s = computeStats(u);
     // maxHp = 60 + 10*12 + 10*6 = 240
     assert.strictEqual(Math.round(s.maxHp), 240);
-    // atk = 8 + 22 + 12 = 42
-    assert.strictEqual(Math.round(s.atk), 42);
+    // atk = 8 + 10*2.7 + 10*1.5 = 50
+    assert.strictEqual(Math.round(s.atk), 50);
     // spd = 10 + 24 = 34
     assert.strictEqual(Math.round(s.spd), 34);
 });
@@ -54,8 +54,8 @@ ok('装备先加后乘', () => {
         equipment: [{ id: 'x', name: 'x', mods: { atk: 10, atkPct: 50 } }],
     }, 'ally');
     const s = computeStats(u);
-    // atk base = 8 + 22 + 1.2 = 31.2 → (31.2+10)*1.5 = 61.8
-    assert.strictEqual(Math.round(s.atk), 62);
+    // atk base = 8 + 27 + 1.5 = 36.5 → (36.5+10)*1.5 = 69.75
+    assert.strictEqual(Math.round(s.atk), 70);
 });
 ok('魂环按档位加成', () => {
     assert.strictEqual(ringTierOf(999).id, 'hundred');
@@ -513,6 +513,67 @@ ok('减速：速度真的降了', () => {
     const spd1 = computeStats(t).spd;
     assert.ok(spd1 < spd0, `速度应该下降，原 ${spd0} 现 ${spd1}`);
     assert.ok(Math.abs(spd1 / spd0 - 0.7) < 0.01, `应降到 70%，实际比例 ${(spd1 / spd0).toFixed(3)}`);
+});
+
+console.log('\n[10] 命中率与等级压制');
+
+// 复刻引擎里的命中公式，验证数值合理
+function hitChance(atkUnit, defUnit) {
+    const a = computeStats(atkUnit);
+    const t = computeStats(defUnit);
+    return Math.max(20, Math.min(99, Math.round(90 + (a.hit - t.eva - 74) * 0.25)));
+}
+
+function mkDuel(lvA, lvB, seed = 3) {
+    const attrs = (lv) => ({ str: lv, vit: lv, agi: lv, spi: lv, sou: lv });
+    const b = new Battle({
+        allies: [{ name: 'A', lv: lvA, attrs: attrs(lvA), pos: { x: 2, y: 3 } }],
+        enemies: [{ name: 'B', lv: lvB, attrs: attrs(lvB), pos: { x: 3, y: 3 } }],
+        rng: mulberry32(seed),
+    });
+    b.start();
+    return b;
+}
+
+ok('同敏捷命中率在 85~95', () => {
+    const b = mkDuel(20, 20);
+    const need = hitChance(b.units[0], b.units[1]);
+    assert.ok(need >= 85 && need <= 95, `同敏捷应接近 90%，实际 ${need}`);
+});
+
+ok('高敏打低敏接近必中', () => {
+    const b = mkDuel(60, 10);
+    const need = hitChance(b.units[0], b.units[1]);
+    assert.ok(need >= 95, `高敏打低敏应接近必中，实际 ${need}`);
+});
+
+ok('低敏打高敏仍有 60% 以上', () => {
+    const b = mkDuel(10, 60);
+    const need = hitChance(b.units[0], b.units[1]);
+    assert.ok(need >= 60, `低敏打高敏不该低于 60%，实际 ${need}`);
+});
+
+ok('等级压制：Lv.60 打 Lv.10 几回合就结束', () => {
+    const b = mkDuel(60, 10, 5);
+    let guard = 0;
+    while (!b.finished && guard++ < 30) {
+        if (!b.current()) break;
+        b.autoAct();
+    }
+    assert.ok(b.finished, '战斗应该结束');
+    assert.ok(b.round <= 8, `应该 8 回合内打完，实际 ${b.round} 回合`);
+});
+
+ok('等级压制：Lv.10 打 Lv.60 打不动', () => {
+    const b = mkDuel(10, 60, 5);
+    let guard = 0;
+    while (!b.finished && guard++ < 60) {
+        if (!b.current()) break;
+        b.autoAct();
+    }
+    // 低级打高级要么打很久，要么直接输
+    const lowHurtHigh = b.round > 8 || b.winner === 'enemy';
+    assert.ok(lowHurtHigh, `低级不该轻松打赢，实际回合 ${b.round} 胜者 ${b.winner}`);
 });
 
 console.log(`\n通过 ${passed} 项。\n`);
