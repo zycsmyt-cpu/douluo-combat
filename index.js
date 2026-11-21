@@ -145,6 +145,18 @@ async function ensureSettings() {
     }
     // 单位库
     S.roster = Array.isArray(S.settings.roster) ? S.settings.roster : [];
+    // 老存档迁移：单位库还是空的，就把场上已有的人收进去
+    if (!S.roster.length) {
+        const seeded = [...S.units.ally, ...S.units.enemy];
+        if (seeded.length) {
+            for (const u of seeded) rosterAdd(u);
+            console.log(`[douluo-combat] 已把场上 ${seeded.length} 个单位收进单位库`);
+        }
+    }
+    // 规则参数迁移：老默认值是 120，新默认 190，用户没手动改过就跟着升
+    if (S.settings.rules && Number(S.settings.rules.defenseK) === 120) {
+        S.settings.rules.defenseK = DEFAULT_RULES.defenseK;
+    }
     if (!S.units.ally.length && !S.units.enemy.length) resetToPresets();
 }
 
