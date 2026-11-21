@@ -1009,3 +1009,48 @@
 #dlc-panel .dlc-cell[draggable="true"]:hover {
     box-shadow: inset 0 0 0 1px rgba(120, 200, 255, 0.6);
 }
+
+/* ===== 单位库弹窗 ===== */
+#dlc-panel .dlc-lib-list,
+.dlc-modal .dlc-lib-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 420px;
+    overflow-y: auto;
+    padding-right: 4px;
+}
+
+.dlc-modal .dlc-lib-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 9px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.dlc-modal .dlc-lib-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.dlc-modal .dlc-lib-name {
+    font-weight: 600;
+}
+
+.dlc-modal .dlc-lib-item em {
+    color: #7d8ea6;
+    font-style: normal;
+    font-size: 11px;
+}
+
+.dlc-modal .dlc-lib-actions {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 4px;
+}

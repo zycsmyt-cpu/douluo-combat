@@ -54,6 +54,7 @@ const DEFAULT_SETTINGS = {
     panelSize: null,     // 浮窗拖边框缩放过之后记住大小
     fabPos: null,        // 悬浮球拖过之后记住位置
     ai: null,            // AI 接入配置（OpenAI 兼容）
+    roster: null,        // 单位库：收藏过的单位，删场上不影响这里
 };
 
 // 数据结构版本：加了武魂品质/类型/魂骨/功法/站位之后不兼容旧配置
@@ -76,6 +77,7 @@ const S = {
     settings: { ...DEFAULT_SETTINGS },
     battle: null,
     units: { ally: [], enemy: [] },
+    roster: [],          // 单位库
     pendingSkill: null,
     pendingTexts: [],
     uiLog: [],
@@ -141,6 +143,8 @@ async function ensureSettings() {
             S.units.enemy = S.settings.units.enemy || [];
         } catch (e) { /* 配置损坏则回落 */ }
     }
+    // 单位库
+    S.roster = Array.isArray(S.settings.roster) ? S.settings.roster : [];
     if (!S.units.ally.length && !S.units.enemy.length) resetToPresets();
 }
 
@@ -157,6 +161,7 @@ function saveSettings() {
     const c = ctx();
     if (!c || !c.extensionSettings) return;
     S.settings.units = { ally: S.units.ally, enemy: S.units.enemy };
+    S.settings.roster = S.roster;
     S.settings.schemaVersion = SCHEMA;
     c.extensionSettings[MODULE] = S.settings;
     try {
@@ -165,10 +170,55 @@ function saveSettings() {
     } catch (e) { /* 忽略 */ }
 }
 
+/* ---------------- 单位库 ---------------- */
+
+function rosterKey(u) {
+    return `${u.name}|${u.lv}|${u.quality}|${u.role}`;
+}
+
+// 入库：同名同等级同品质同类型视为同一个人，用新数据覆盖
+function rosterAdd(unit) {
+    if (!unit || !unit.name) return null;
+    const key = rosterKey(unit);
+    const exist = S.roster.find((r) => rosterKey(r) === key);
+    if (exist) {
+        const keepId = exist.rosterId;
+        Object.assign(exist, JSON.parse(JSON.stringify(unit)));
+        exist.rosterId = keepId;
+        return exist;
+    }
+    const entry = JSON.parse(JSON.stringify(unit));
+    entry.rosterId = entry.rosterId || uid('roster');
+    S.roster.push(entry);
+    return entry;
+}
+
+function rosterToField(rosterId, side) {
+    const r = S.roster.find((x) => x.rosterId === rosterId);
+    if (!r) return false;
+    const copy = JSON.parse(JSON.stringify(r));
+    delete copy.rosterId;
+    copy.pos = defaultPos(side, S.units[side].length);
+    S.units[side].push(copy);
+    saveSettings();
+    render();
+    return true;
+}
+
+function rosterRemove(rosterId) {
+    const i = S.roster.findIndex((x) => x.rosterId === rosterId);
+    if (i < 0) return;
+    S.roster.splice(i, 1);
+    saveSettings();
+    render();
+}
+
 function resetToPresets() {
     const presets = clone(PRESET_UNITS);
     S.units.ally = presets.slice(0, 2);
     S.units.enemy = presets.slice(2, 4);
+    // 预设也顺手入库，之后可以随便换
+    for (const p of presets) rosterAdd(p);
     saveSettings();
 }
 
@@ -774,6 +824,7 @@ function renderPanel() {
       <button class="dlc-btn danger" data-act="concede">认输</button>
       <button class="dlc-btn" data-act="settings">设置</button>
       <button class="dlc-btn" data-act="probe">探变量</button>
+      <button class="dlc-btn" data-act="roster">单位库</button>
       <button class="dlc-btn" data-act="reset">重置队伍</button>
       <button class="dlc-btn" data-act="diag">自检</button>
     </div>
@@ -1164,7 +1215,7 @@ function applyAIUnits(units) {
         const equipment = Array.isArray(u.equipment) ? u.equipment.map((e) => normalizeAiEquip(e)) : [];
         const bones = Array.isArray(u.bones) ? u.bones.map((b) => normalizeAiBone(b)) : [];
 
-        S.units[side].push({
+        const entry = {
             name: String(u.name || '无名魂师').slice(0, 20),
             lv,
             quality,
@@ -1178,7 +1229,12 @@ function applyAIUnits(units) {
             equipment,
             bones,
             pos: defaultPos(side, S.units[side].length),
-        });
+        };
+        // 入库一份，场上用独立副本：删场上不影响库
+        const rec = rosterAdd(entry);
+        const fieldCopy = JSON.parse(JSON.stringify(entry));
+        if (rec) fieldCopy.rosterId = rec.rosterId;
+        S.units[side].push(fieldCopy);
         added[side] += 1;
         logOnly(`[AI] +${side === 'ally' ? '我方' : '敌方'} ${u.name} Lv.${lv} ${QUALITY[quality].name}${ROLES[role].name}`
             + `｜魂技 ${skills.length}｜功法 ${techniques.length}｜装备 ${equipment.length}｜魂骨 ${bones.length}`);
@@ -1928,6 +1984,70 @@ function renderElementEditor(el) {
 
 const ELEM_PALETTE = ['#9be7d0', '#ffe066', '#fff3b0', '#8b7bd8', '#ffd9a0', '#7be8a8', '#a3e635', '#d8b4fe', '#c0c8ff', '#a0a8e8', '#ff5c5c', '#ff9ecb'];
 
+/* ---------------- 单位库弹窗 ---------------- */
+
+function openRoster() {
+    const el = document.createElement('div');
+    el.className = 'dlc-modal';
+    const list = S.roster.length
+        ? S.roster.map((r) => `
+          <div class="dlc-lib-item">
+            <div class="dlc-lib-main">
+              <span class="dlc-lib-name">${esc(r.name)}</span>
+              <em>Lv.${r.lv} · ${QUALITY[r.quality] ? QUALITY[r.quality].name : '?'} · ${ROLES[r.role] ? ROLES[r.role].name : '?'}${r.martial ? ` · ${esc(r.martial)}` : ''}</em>
+            </div>
+            <div class="dlc-lib-actions">
+              <button class="dlc-mini" data-lib-side="ally" data-lib-id="${esc(r.rosterId)}">→ 我方</button>
+              <button class="dlc-mini" data-lib-side="enemy" data-lib-id="${esc(r.rosterId)}">→ 敌方</button>
+              <button class="dlc-mini danger" data-lib-del="${esc(r.rosterId)}">删库</button>
+            </div>
+          </div>`).join('')
+        : '<div class="dlc-empty">库是空的。用「AI 解析」或「+ 单位」建的人会自动进库。</div>';
+
+    el.innerHTML = `
+      <div class="dlc-modal-box" style="width:720px">
+        <div class="dlc-modal-head">单位库（${S.roster.length}）</div>
+        <div class="dlc-form">
+          <div class="dlc-note">从库里挑人上场。场上删掉不会影响这里，随时能再调出来。</div>
+          <div class="dlc-lib-list">${list}</div>
+        </div>
+        <div class="dlc-modal-foot">
+          <button class="dlc-btn" data-act="modal-cancel">关闭</button>
+        </div>
+      </div>`;
+
+    el.addEventListener('click', (e) => {
+        const sideBtn = e.target.closest('[data-lib-side]');
+        if (sideBtn) {
+            const id = sideBtn.getAttribute('data-lib-id');
+            const side = sideBtn.getAttribute('data-lib-side');
+            if (rosterToField(id, side)) {
+                toast(`已调到${side === 'ally' ? '我方' : '敌方'}`);
+                closeEditor();
+                render();
+            }
+            return;
+        }
+        const delBtn = e.target.closest('[data-lib-del]');
+        if (delBtn) {
+            const id = delBtn.getAttribute('data-lib-del');
+            const r = S.roster.find((x) => x.rosterId === id);
+            if (r && !window.confirm(`从库里彻底删除「${r.name}」？`)) return;
+            rosterRemove(id);
+            closeEditor();
+            openRoster();
+            return;
+        }
+        const act = e.target.closest('[data-act]');
+        if (act && act.getAttribute('data-act') === 'modal-cancel') { closeEditor(); return; }
+        if (e.target === el) closeEditor();
+    });
+
+    document.body.appendChild(el);
+    S.modalEl = el;
+    bindModalEsc();
+}
+
 function openSettings() {
     const s = S.settings;
     const src = s.sources || DEFAULT_SOURCES;
@@ -2181,6 +2301,7 @@ function saveEditor(el, c) {
 
     if (index < 0) {
         S.units[targetSide].push(out);
+        rosterAdd(out);   // 新建的单位顺手入库
     } else if (targetSide === side) {
         S.units[side][index] = out;
     } else {
@@ -2221,9 +2342,12 @@ function onAction(act, el) {
         case 'write':
             flushTexts(true);
             return;
+        case 'roster':
+            openRoster();
+            return;
         case 'reset': {
             const total = S.units.ally.length + S.units.enemy.length;
-            if (total > 0 && !window.confirm(`重置队伍会把当前 ${total} 个单位（包括 AI 解析出来的）换成预设单位，确定？`)) return;
+            if (total > 0 && !window.confirm(`重置会把场上 ${total} 个单位换成预设。单位库里的人不会丢，之后还能调回来。确定？`)) return;
             S.battle = null;
             S.pendingSkill = null;
             S.pendingTexts = [];
