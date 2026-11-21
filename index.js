@@ -2439,7 +2439,7 @@ function bindRoot(root) {
     // 拖动标题栏移动浮窗 / 拖右下角缩放
     let drag = null;
     let resize = null;
-    root.addEventListener('mousedown', (e) => {
+    root.addEventListener('pointerdown', (e) => {
         if (e.target.closest('[data-resize]')) {
             const r = root.getBoundingClientRect();
             resize = { w: r.width, h: r.height, sx: e.clientX, sy: e.clientY };
@@ -2490,8 +2490,9 @@ function bindRoot(root) {
             saveSettings();
         }
     };
-    window.addEventListener('mousemove', onMove);
-    window.addEventListener('mouseup', onUp);
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
 
     // ESC 关面板（弹窗开着时交给 bindModalEsc 处理，这里不动）
     document.addEventListener('keydown', (e) => {
@@ -2616,27 +2617,30 @@ function buildFab() {
 
     let drag = null;
     let moved = false;
-    fab.addEventListener('mousedown', (e) => {
+    // 用 pointer 事件：鼠标和手机触摸都能拖
+    fab.addEventListener('pointerdown', (e) => {
         const r = fab.getBoundingClientRect();
-        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, sx: e.clientX, sy: e.clientY };
+        drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, sx: e.clientX, sy: e.clientY, pid: e.pointerId };
         moved = false;
         e.preventDefault();
     });
-    window.addEventListener('mousemove', (e) => {
+    const onFabMove = (e) => {
         if (!drag) return;
-        if (!moved && (Math.abs(e.clientX - drag.sx) > 3 || Math.abs(e.clientY - drag.sy) > 3)) moved = true;
+        if (!moved && (Math.abs(e.clientX - drag.sx) > 4 || Math.abs(e.clientY - drag.sy) > 4)) moved = true;
         if (!moved) return;
         const x = Math.max(4, Math.min(window.innerWidth - 54, e.clientX - drag.dx));
         const y = Math.max(4, Math.min(window.innerHeight - 54, e.clientY - drag.dy));
-        fab.style.left = `${x}px`;
-        fab.style.top = `${y}px`;
+        fab.style.left = `${Math.round(x)}px`;
+        fab.style.top = `${Math.round(y)}px`;
         fab.style.right = 'auto';
         fab.style.bottom = 'auto';
-    });
-    window.addEventListener('mouseup', () => {
+        e.preventDefault();
+    };
+    const onFabUp = () => {
         if (!drag) return;
         const wasDrag = moved;
         drag = null;
+        moved = false;
         if (wasDrag) {
             if (S.settings) {
                 S.settings.fabPos = { left: fab.style.left, top: fab.style.top };
@@ -2645,7 +2649,14 @@ function buildFab() {
         } else {
             togglePanel();
         }
-    });
+    };
+    window.addEventListener('pointermove', onFabMove);
+    window.addEventListener('pointerup', onFabUp);
+    window.addEventListener('pointercancel', onFabUp);
+    // 老浏览器兜底
+    fab.addEventListener('touchend', (e) => {
+        if (drag) { e.preventDefault(); onFabUp(); }
+    }, { passive: false });
 }
 
 function buildPanel() {

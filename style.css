@@ -1054,3 +1054,9 @@
     display: flex;
     gap: 4px;
 }
+
+/* ===== 触摸端拖拽支持 ===== */
+#dlc-panel .dlc-head[data-drag],
+#dlc-panel .dlc-resize {
+    touch-action: none;
+}
